@@ -58,12 +58,22 @@ async def _is_admin_callback(callback: types.CallbackQuery) -> bool:
 
 def _role_select_kb(user_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
+
     kb.add(
         types.InlineKeyboardButton("Admin", callback_data=f"db_user:{user_id}:role:set:Admin"),
         types.InlineKeyboardButton("User", callback_data=f"db_user:{user_id}:role:set:User"),
     )
-    return kb
 
+    kb.add(
+        types.InlineKeyboardButton("Operator", callback_data=f"db_user:{user_id}:role:set:Operator"),
+        types.InlineKeyboardButton("Shop", callback_data=f"db_user:{user_id}:role:set:Shop"),
+    )
+
+    kb.add(
+        types.InlineKeyboardButton("MasterCard", callback_data=f"db_user:{user_id}:role:set:MasterCard"),
+    )
+
+    return kb
 
 def _user_actions_kb(user: dict, last_order_ref: Optional[dict] = None) -> types.InlineKeyboardMarkup:
     uid_raw = user.get("telegram_id")
@@ -752,7 +762,7 @@ async def admin_db_set_role(callback: types.CallbackQuery, state: FSMContext) ->
         return
 
     role_name = parts[4]
-    if role_name not in {"Admin", "User"}:
+    if role_name not in {"Admin", "User", "Operator", "Shop", "MasterCard"}:
         await callback.message.answer("Некорректная роль.")
         return
 

@@ -12,12 +12,14 @@ from handlers.accounting import register_accounting_handlers
 from handlers.admin_db import register_admin_db_handlers
 from handlers.admin_p2p import register_admin_p2p_handlers
 from handlers.sms_tg import register as register_sms_tg
+from handlers.mastercard import register_mastercard_handlers
 
 
 def register_all(dp: Dispatcher):
     """Главная точка регистрации всех обработчиков"""
 
     register_start(dp)
+    register_mastercard_handlers(dp)
     register_chat_handlers(dp)
     register_buy_handlers(dp)
     register_admin_handlers(dp)

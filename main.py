@@ -22,6 +22,7 @@ from db.users import init_users_db
 from handlers import register_all
 from middlewares.block_inactive import BlockInactiveUsersMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
+from db.mastercard import init_mastercard_db
 
 
 # -----------------------------------------------------------------------------
@@ -47,6 +48,7 @@ async def on_startup(dispatcher: Dispatcher) -> None:
     """Инициализация БД, таблиц и сервисов перед стартом polling."""
     await init_users_db()
     await init_cards_table()
+    await init_mastercard_db()
     await init_p2p_db()
     await init_orders_db()
     await init_settings_table()
