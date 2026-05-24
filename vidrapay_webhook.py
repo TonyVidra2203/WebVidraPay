@@ -421,14 +421,70 @@ async def _ensure_vidrapay_distribution_tables() -> None:
             order_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             method_key TEXT NOT NULL,
-            card_id INTEGER NOT NULL UNIQUE,
+            card_id INTEGER NOT NULL,
             bank_name TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
-
     await db.commit()
+
+    # Мягкая миграция со старой схемы, где card_id был UNIQUE.
+    # Новая логика хранит только успешные сделки и допускает до 3 успешных
+    # использований одной карты за окно лимита.
+    try:
+        cur = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vidrapay_card_distribution_usage'"
+        )
+        row = await cur.fetchone()
+        with suppress(Exception):
+            await cur.close()
+
+        create_sql = str(row[0] or "") if row else ""
+        if "CARD_ID INTEGER NOT NULL UNIQUE" in create_sql.upper():
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vidrapay_card_distribution_usage_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    method_key TEXT NOT NULL,
+                    card_id INTEGER NOT NULL,
+                    bank_name TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO vidrapay_card_distribution_usage_new
+                    (id, order_id, user_id, method_key, card_id, bank_name, created_at)
+                SELECT id, order_id, user_id, method_key, card_id, bank_name, created_at
+                  FROM vidrapay_card_distribution_usage
+                """
+            )
+            await db.execute("DROP TABLE vidrapay_card_distribution_usage")
+            await db.execute(
+                "ALTER TABLE vidrapay_card_distribution_usage_new RENAME TO vidrapay_card_distribution_usage"
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to migrate VidraPay distribution usage table")
+
+    with suppress(Exception):
+        await db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_vidrapay_card_usage_order_card
+                ON vidrapay_card_distribution_usage(order_id, card_id)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_vidrapay_card_usage_card_created
+                ON vidrapay_card_distribution_usage(card_id, created_at)
+            """
+        )
+        await db.commit()
 
 
 async def _is_vidrapay_distribution_enabled() -> bool:
@@ -449,6 +505,17 @@ async def _filter_cards_by_vidrapay_distribution(
     *,
     order_id: int = 0,
 ) -> List[Dict[str, Any]]:
+    """
+    Фильтр выдачи VidraPay-реквизитов.
+
+    Засчитываются только записи из vidrapay_card_distribution_usage, которые
+    теперь создаются после успешного обмена, а не после простого показа карты.
+
+    Правила:
+    - после успешного перевода карта скрыта на 15 минут;
+    - если за последние 20 часов по карте было 3 успешных перевода, карта скрыта
+      до выхода из этого окна.
+    """
     if not cards:
         return []
 
@@ -458,21 +525,43 @@ async def _filter_cards_by_vidrapay_distribution(
     db = await get_db()
     cur = await db.execute(
         """
-        SELECT card_id
+        SELECT
+            card_id,
+            MAX(CASE
+                    WHEN datetime(created_at) >= datetime('now', '-15 minutes')
+                    THEN 1 ELSE 0
+                END) AS has_recent_success,
+            SUM(CASE
+                    WHEN datetime(created_at) >= datetime('now', '-20 hours')
+                    THEN 1 ELSE 0
+                END) AS success_count_20h
           FROM vidrapay_card_distribution_usage
          WHERE order_id != ?
+         GROUP BY card_id
         """,
         (int(order_id or 0),),
     )
     rows = await cur.fetchall() or []
     await cur.close()
 
-    used_card_ids = {int(row[0]) for row in rows if row and row[0] is not None}
+    blocked_card_ids: Set[int] = set()
+    for row in rows:
+        if not row or row[0] is None:
+            continue
+        try:
+            card_id = int(row[0])
+            has_recent_success = int(row[1] or 0) > 0
+            success_count_20h = int(row[2] or 0)
+        except Exception:
+            continue
+
+        if card_id > 0 and (has_recent_success or success_count_20h >= 3):
+            blocked_card_ids.add(card_id)
 
     result: List[Dict[str, Any]] = []
     for card in cards:
         card_id = int(card.get("card_id") or 0)
-        if card_id > 0 and card_id not in used_card_ids:
+        if card_id <= 0 or card_id not in blocked_card_ids:
             result.append(card)
 
     return result
@@ -2754,23 +2843,9 @@ async def vidrapay_select_method(request: web.Request) -> web.Response:
                 status=404,
             )
 
-        claimed = await _claim_vidrapay_distribution_card(
-            order_id=order_id,
-            user_id=user_id,
-            method_key="card",
-            card=selected_card,
-        )
-
-        if not claimed:
-            return _no_cache_response(
-                _render_method_choice_page(
-                    order,
-                    token,
-                    "Проверенный банк уже был выдан другому пользователю. Выберите другой способ оплаты.",
-                ),
-                status=409,
-            )
-
+        # Важно: здесь только сохраняем выбранные реквизиты в заявке.
+        # Лимиты/паузы по карте должны засчитываться не при выдаче реквизитов,
+        # а только после успешного завершения обмена в handlers/chat/instruction.py.
         try:
             await _set_payment_card(order_id, method_db, selected_card, requisites)
             order["payment_method"] = method_db
@@ -2778,7 +2853,6 @@ async def vidrapay_select_method(request: web.Request) -> web.Response:
             order["bank_name"] = str(selected_card.get("bank_name") or "").strip()
             order["card_id"] = selected_card_id
         except Exception:
-            await _release_vidrapay_distribution_card(order_id, selected_card_id)
             logger.exception(
                 "Failed to set familiar VidraPay card for order_id=%s card_id=%s",
                 order_id,
@@ -2940,26 +3014,9 @@ async def vidrapay_select_card(request: web.Request) -> web.Response:
     method_db = str(method.get("db_value") or f"vidrapay_{method_key}")
     selected_card_id = int(selected_card.get("card_id") or 0)
 
-    claimed = await _claim_vidrapay_distribution_card(
-        order_id=order_id,
-        user_id=user_id,
-        method_key=method_key,
-        card=selected_card,
-    )
-
-    if not claimed:
-        return web.Response(
-            text=_render_bank_choice_page(
-                order,
-                token,
-                method_key,
-                cards,
-                "Эти реквизиты уже были выданы другому пользователю. Выберите другой банк.",
-            ),
-            content_type="text/html",
-            status=409,
-        )
-
+    # Важно: здесь только сохраняем выбранные реквизиты в заявке.
+    # Лимиты/паузы по карте должны засчитываться не при выдаче реквизитов,
+    # а только после успешного завершения обмена в handlers/chat/instruction.py.
     try:
         await _set_payment_card(order_id, method_db, selected_card, requisites)
         order["payment_method"] = method_db

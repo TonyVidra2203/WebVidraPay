@@ -592,6 +592,148 @@ def _is_web_order(order: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+async def _ensure_vidrapay_distribution_tables_for_completion() -> None:
+    """
+    Таблица фактических успешных использований VidraPay-карт.
+
+    Важно: старые версии создавали UNIQUE на card_id и писали сюда карту
+    сразу при выдаче реквизитов. Новая логика пишет запись только после
+    успешного завершения обмена и допускает несколько успешных сделок
+    по одной карте во времени.
+    """
+    db = await get_db()
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vidrapay_card_distribution_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            method_key TEXT NOT NULL,
+            card_id INTEGER NOT NULL,
+            bank_name TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.commit()
+
+    # Мягкая миграция со старой схемы, где card_id был UNIQUE.
+    # UNIQUE ломает правило "до 3 успешных переводов", поэтому убираем его.
+    try:
+        cur = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vidrapay_card_distribution_usage'"
+        )
+        row = await cur.fetchone()
+        with suppress(Exception):
+            await cur.close()
+
+        create_sql = str(row[0] or "") if row else ""
+        if "CARD_ID INTEGER NOT NULL UNIQUE" in create_sql.upper():
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vidrapay_card_distribution_usage_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    method_key TEXT NOT NULL,
+                    card_id INTEGER NOT NULL,
+                    bank_name TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO vidrapay_card_distribution_usage_new
+                    (id, order_id, user_id, method_key, card_id, bank_name, created_at)
+                SELECT id, order_id, user_id, method_key, card_id, bank_name, created_at
+                  FROM vidrapay_card_distribution_usage
+                """
+            )
+            await db.execute("DROP TABLE vidrapay_card_distribution_usage")
+            await db.execute(
+                "ALTER TABLE vidrapay_card_distribution_usage_new RENAME TO vidrapay_card_distribution_usage"
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to migrate VidraPay distribution usage table")
+
+    with suppress(Exception):
+        await db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_vidrapay_card_usage_order_card
+                ON vidrapay_card_distribution_usage(order_id, card_id)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_vidrapay_card_usage_card_created
+                ON vidrapay_card_distribution_usage(card_id, created_at)
+            """
+        )
+        await db.commit()
+
+
+async def _record_successful_vidrapay_card_usage(order: Optional[Dict[str, Any]]) -> None:
+    """
+    Засчитывает использование карты VidraPay только после успешной сделки.
+
+    Это исправляет баг: раньше карта попадала под паузу/лимиты сразу после
+    показа реквизитов на сайте оплаты, даже если пользователь отменил заявку.
+    """
+    if not order or not _is_web_order(order):
+        return
+
+    payment_method = str((order or {}).get("payment_method") or "").strip().lower()
+    if not payment_method.startswith("vidrapay_"):
+        return
+
+    try:
+        order_id = int((order or {}).get("order_id") or 0)
+        user_id = int((order or {}).get("user_id") or 0)
+        card_id = int((order or {}).get("card_id") or 0)
+    except Exception:
+        return
+
+    if order_id <= 0 or card_id <= 0:
+        return
+
+    method_key = payment_method.replace("vidrapay_", "", 1) or "card"
+    bank_name = str((order or {}).get("bank_name") or "").strip()
+
+    try:
+        await _ensure_vidrapay_distribution_tables_for_completion()
+        db = await get_db()
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO vidrapay_card_distribution_usage(
+                order_id,
+                user_id,
+                method_key,
+                card_id,
+                bank_name,
+                created_at
+            )
+            VALUES(?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                order_id,
+                user_id,
+                method_key,
+                card_id,
+                bank_name,
+            ),
+        )
+        await db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to record successful VidraPay card usage order_id=%s card_id=%s",
+            order_id,
+            card_id,
+        )
+
+
 def _is_binance_order(order: Optional[Dict[str, Any]]) -> bool:
     pm = str((order or {}).get("payment_method") or "").lower().strip()
     return pm == "paycore"
@@ -2560,6 +2702,9 @@ async def track_ff_order_status(
         if not did_finalize:
             await _finalize_exchange_ui(bot=bot, order_id=db_order_id, operator_id=operator_id)
             return
+
+        # Лимиты/паузы VidraPay-карт засчитываем только после успешной финализации сделки.
+        await _record_successful_vidrapay_card_usage(current)
 
         # Финализирующую карточку в Telegram должен получать любой не-гость,
         # включая WEB-пользователя с Telegram ID.
