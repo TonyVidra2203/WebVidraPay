@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="format-detection" content="telephone=no, date=no, email=no, address=no">
+    <title>Мои заявки — ВыДрА</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #000000;
+            --panel-2: rgba(28, 28, 38, 0.95);
+            --text: #f3ead7;
+            --muted: #b8ab8b;
+            --border: rgba(216, 178, 106, 0.22);
+            --danger-bg: rgba(120, 22, 22, 0.22);
+            --warn-bg: linear-gradient(135deg, #20170d, #2c2011);
+            --green-bg: linear-gradient(135deg, #0f1a12, #162419);
+            --red-bg: linear-gradient(135deg, #261314, #34191b);
+            --info-bg: linear-gradient(135deg, #14161f, #1a1d29);
+            --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #000000;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background:
+                radial-gradient(circle at top, rgba(216, 178, 106, 0.10), transparent 30%),
+                linear-gradient(180deg, #000000 0%, #0a0a0d 35%, #111218 100%);
+            color: var(--text);
+        }
+
+        .page {
+            min-height: 100vh;
+            padding: 24px 16px 40px;
+            overflow-x: hidden;
+        }
+
+        .wrap {
+            max-width: 1120px;
+            margin: 0 auto;
+            overflow-x: hidden;
+        }
+
+        body,
+        .page,
+        .wrap,
+        .card,
+        .grid,
+        .info-box,
+        .copy-row,
+        .copy-value,
+        .info-value,
+        .timeline,
+        .timeline-step {
+            min-width: 0;
+        }
+
+        .btn,
+        .btn-copy {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 46px;
+            padding: 12px 20px;
+            border-radius: 999px;
+            text-decoration: none;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.2s ease;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+            max-width: 100%;
+        }
+
+        .btn:hover,
+        .btn-copy:hover {
+            transform: translateY(-1px);
+            background: rgba(216, 178, 106, 0.10);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #c79646, #f0c879);
+            color: #1a140d;
+            border: none;
+            box-shadow: 0 12px 30px rgba(216, 178, 106, 0.24);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #9f2d2d, #df5b5b);
+            color: #fff4f4;
+            border: 1px solid rgba(255, 120, 120, 0.28);
+            box-shadow: 0 12px 30px rgba(180, 40, 40, 0.30);
+        }
+
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #b33434, #eb6666);
+        }
+
+        .btn-copy {
+            min-height: 40px;
+            padding: 10px 14px;
+            font-size: 13px;
+        }
+
+        .btn-copy.copied {
+            background: rgba(110, 175, 110, 0.22);
+            border-color: rgba(120, 220, 120, 0.26);
+            color: #e8ffe8;
+        }
+
+        .card {
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+            overflow-x: hidden;
+        }
+
+        h2, h3 {
+            margin-top: 0;
+            color: #fff3d8;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .err {
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: var(--danger-bg);
+            border: 1px solid rgba(255, 143, 143, 0.25);
+            color: #ffd2d2;
+            white-space: pre-wrap;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 36px 24px;
+        }
+
+        .empty-state-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff3d8;
+            margin-bottom: 10px;
+        }
+
+        .empty-state-text {
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--muted);
+            max-width: 560px;
+            margin: 0 auto;
+        }
+
+        html {
+            scrollbar-width: none;
+        }
+
+        body::-webkit-scrollbar,
+        html::-webkit-scrollbar,
+        .page::-webkit-scrollbar,
+        .wrap::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+            display: none;
+        }
+
+        .current-order-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .current-order-title-wrap {
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+
+        .current-order-title {
+            margin: 0;
+            color: #fff3d8;
+            font-size: 30px;
+            line-height: 1.15;
+        }
+
+        .current-order-id {
+            flex: 0 0 auto;
+            margin: 2px 0 0;
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff2d3;
+            white-space: nowrap;
+        }
+
+        .current-order-timer {
+            margin: 2px 0 14px;
+            display: inline-flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .current-order-timer-label {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.3;
+        }
+
+        .current-order-timer-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff2d3;
+            line-height: 1.2;
+        }
+
+        .new-order-cta {
+            margin-top: 18px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 700;
+            border: 1px solid transparent;
+            max-width: 100%;
+        }
+
+        .status-success {
+            background: rgba(70, 155, 90, 0.18);
+            color: #cbffd4;
+            border-color: rgba(120, 220, 140, 0.24);
+        }
+
+        .status-danger {
+            background: rgba(180, 50, 50, 0.18);
+            color: #ffd2d2;
+            border-color: rgba(255, 120, 120, 0.24);
+        }
+
+        .status-warn {
+            background: rgba(216, 178, 106, 0.18);
+            color: #ffe0a0;
+            border-color: rgba(240, 200, 121, 0.24);
+        }
+
+        .status-info {
+            background: rgba(125, 145, 255, 0.16);
+            color: #dbe3ff;
+            border-color: rgba(145, 165, 255, 0.24);
+        }
+
+        .status-muted {
+            background: rgba(255, 255, 255, 0.08);
+            color: #e9dfcb;
+            border-color: rgba(255, 255, 255, 0.10);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .info-box {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(216, 178, 106, 0.14);
+            border-radius: 16px;
+            padding: 16px;
+            max-width: 100%;
+            overflow: hidden;
+        }
+
+        .info-label {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .info-value {
+            font-size: 17px;
+            font-weight: 700;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            color: #fff2d3;
+            max-width: 100%;
+        }
+
+        .payment-box,
+        .success-box,
+        .waiting-box {
+            border-radius: 18px;
+            padding: 18px;
+            margin-top: 20px;
+            border: 1px solid rgba(240, 200, 121, 0.18);
+            overflow-x: hidden;
+        }
+
+        .payment-box {
+            background: var(--warn-bg);
+        }
+
+        .success-box {
+            background: var(--green-bg);
+            border-color: rgba(120, 220, 140, 0.18);
+        }
+
+        .waiting-box {
+            background: var(--info-bg);
+            border-color: rgba(145, 165, 255, 0.24);
+        }
+
+        .hint {
+            margin-top: 10px;
+            color: #e4d7bb;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+        }
+
+        .action-row {
+            margin-top: 16px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .history-item {
+            border-bottom: 1px solid rgba(216, 178, 106, 0.12);
+            padding: 14px 0;
+            overflow: hidden;
+        }
+
+        .history-item:last-child {
+            border-bottom: none;
+        }
+
+        .history-top {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .history-meta {
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        form.inline {
+            display: inline;
+        }
+
+        .timeline {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .timeline-step {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(216, 178, 106, 0.14);
+            border-radius: 16px;
+            padding: 16px;
+            overflow: hidden;
+        }
+
+        .timeline-step.is-done {
+            background: rgba(80, 150, 90, 0.14);
+            border-color: rgba(120, 220, 140, 0.18);
+        }
+
+        .timeline-step.is-current {
+            background: rgba(216, 178, 106, 0.14);
+            border-color: rgba(240, 200, 121, 0.18);
+        }
+
+        .timeline-top {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .timeline-icon {
+            width: 30px;
+            height: 30px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.10);
+            color: #fff1cf;
+            flex-shrink: 0;
+        }
+
+        .timeline-step.is-done .timeline-icon {
+            background: rgba(120, 220, 140, 0.20);
+            color: #d7ffdf;
+        }
+
+        .timeline-step.is-current .timeline-icon {
+            background: rgba(240, 200, 121, 0.22);
+            color: #fff0c4;
+        }
+
+        .timeline-title {
+            font-weight: 700;
+            font-size: 15px;
+            color: #fff1cf;
+        }
+
+        .timeline-text {
+            color: #e0d4b8;
+            line-height: 1.45;
+            font-size: 14px;
+            overflow-wrap: anywhere;
+        }
+
+        .copy-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            max-width: 100%;
+        }
+
+        .copy-value {
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            color: #fff2d3 !important;
+            max-width: 100%;
+        }
+
+        #payment-details-value {
+            color: #fff2d3 !important;
+        }
+
+        .copy-value,
+        .copy-value a,
+        .copy-value a:visited,
+        .copy-value a:hover,
+        .copy-value a:active,
+        .info-value,
+        .info-value a,
+        .info-value a:visited,
+        .info-value a:hover,
+        .info-value a:active,
+        .history-meta a,
+        .history-meta a:visited,
+        .history-meta a:hover,
+        .history-meta a:active {
+            color: #fff2d3 !important;
+            text-decoration: none;
+        }
+
+        a[x-apple-data-detectors],
+        a[x-apple-data-detectors-type="telephone"],
+        a[x-apple-data-detectors-type="address"],
+        a[x-apple-data-detectors-type="calendar-event"],
+        a[x-apple-data-detectors-type="tracking-number"] {
+            color: #fff2d3 !important;
+            text-decoration: none !important;
+            font-weight: 700 !important;
+        }
+
+        @media (max-width: 640px) {
+            .page {
+                padding: 14px 12px 28px;
+                overflow-x: hidden;
+            }
+
+            .card {
+                border-radius: 20px;
+                padding: 18px;
+                overflow-x: hidden;
+            }
+
+            .btn,
+            .btn-copy {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .empty-state {
+                padding: 24px 12px;
+            }
+
+            .empty-state-title {
+                font-size: 21px;
+            }
+
+            .current-order-head {
+                gap: 10px;
+                align-items: center;
+            }
+
+            .current-order-title {
+                font-size: 24px;
+            }
+
+            .current-order-id {
+                font-size: 14px;
+                margin-top: 0;
+            }
+
+            .current-order-timer {
+                margin: 2px 0 12px;
+            }
+
+            .current-order-timer-label {
+                font-size: 11px;
+            }
+
+            .current-order-timer-value {
+                font-size: 15px;
+            }
+
+            .new-order-cta .btn {
+                width: 100%;
+            }
+
+            .timeline {
+                display: none;
+            }
+
+            .current-order-meta-grid {
+                display: none;
+            }
+
+            .copy-row,
+            .action-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .copy-value,
+            .info-value,
+            .history-meta,
+            .hint,
+            .timeline-text {
+                min-width: 0;
+                overflow-wrap: anywhere;
+                word-break: break-word;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="wrap">
+
+            {% set final_statuses = ['completed', 'finished', 'done', 'closed', 'canceled', 'cancelled', 'rejected', 'expired'] %}
+            {% set ns = namespace(active_order=None) %}
+
+            {% if latest_order and latest_order.is_active_for_web %}
+                {% set ns.active_order = latest_order %}
+            {% endif %}
+
+            {% if not ns.active_order and orders %}
+                {% for order in orders %}
+                    {% if order.is_active_for_web and not ns.active_order %}
+                        {% set ns.active_order = order %}
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+
+            {% if error %}
+            <div class="card">
+                <h2>Ошибка</h2>
+                <div class="err">{{ error }}</div>
+            </div>
+            {% endif %}
+
+            <div id="orders-live-root">
+            {% if ns.active_order %}
+            <div
+                class="card"
+                id="latest-order-card"
+                data-order-id="{{ ns.active_order.order_id }}"
+                data-status-label="{{ ns.active_order.status_label }}"
+                data-bank-card="{{ ns.active_order.bank_card or '' }}"
+                data-bank-name="{{ ns.active_order.bank_name or '' }}"
+                data-payment-confirmed="{{ ns.active_order.payment_confirmed_at or '' }}"
+                data-exchange-started="{{ ns.active_order.exchange_started_at or '' }}"
+                data-ff-funds-sent="{{ ns.active_order.ff_funds_sent_at or '' }}"
+                data-tx-ready="{{ ns.active_order.tx_ready_at or '' }}"
+                data-tx-to="{{ ns.active_order.tx_to or '' }}"
+                data-show-web-expire-timer="{{ '1' if ns.active_order.show_web_expire_timer else '0' }}"
+                data-web-expire-seconds-left="{{ ns.active_order.web_expire_seconds_left or 0 }}"
+            >
+                <div class="current-order-head">
+                    <div class="current-order-title-wrap">
+                        <h2 class="current-order-title">Текущая заявка</h2>
+                    </div>
+                    <div class="current-order-id">#{{ ns.active_order.order_id }}</div>
+                </div>
+
+                {% if ns.active_order.show_web_expire_timer %}
+                <div class="current-order-timer">
+                    <div class="current-order-timer-label">Осталось времени</div>
+                    <div class="current-order-timer-value" id="web-expire-timer-value">
+                        {{ ns.active_order.web_expire_minutes_left }} мин.
+                    </div>
+                </div>
+                {% endif %}
+
+                <p>
+                    <span class="status-badge status-{{ ns.active_order.status_class }}">
+                        {{ ns.active_order.status_label }}
+                    </span>
+                </p>
+
+                <p class="muted">{{ ns.active_order.status_hint }}</p>
+
+                {% if ns.active_order.show_web_progress %}
+                <div class="timeline">
+                    <div class="timeline-step {% if ns.active_order.web_step_payment_received %}is-done{% else %}is-current{% endif %}">
+                        <div class="timeline-top">
+                            <div class="timeline-icon">
+                                {% if ns.active_order.web_step_payment_received %}✓{% else %}1{% endif %}
+                            </div>
+                            <div class="timeline-title">Этап 1: обмен запущен</div>
+                        </div>
+                        <div class="timeline-text">
+                            Блок меняется после того, как оператор в Telegram начнёт обмен.
+                        </div>
+                    </div>
+
+                    <div class="timeline-step {% if ns.active_order.web_step_exchange_started %}is-done{% elif ns.active_order.web_step_payment_received %}is-current{% endif %}">
+                        <div class="timeline-top">
+                            <div class="timeline-icon">
+                                {% if ns.active_order.web_step_exchange_started %}✓{% else %}2{% endif %}
+                            </div>
+                            <div class="timeline-title">Этап 2: средства на обменнике</div>
+                        </div>
+                        <div class="timeline-text">
+                            Блок меняется, когда средства отправлены на обменник.
+                        </div>
+                    </div>
+
+                    <div class="timeline-step {% if ns.active_order.web_step_wallet_transfer %}is-done{% elif ns.active_order.web_step_exchange_started %}is-current{% endif %}">
+                        <div class="timeline-top">
+                            <div class="timeline-icon">
+                                {% if ns.active_order.web_step_wallet_transfer %}✓{% else %}3{% endif %}
+                            </div>
+                            <div class="timeline-title">Этап 3: перевод на ваш кошелек</div>
+                        </div>
+                        <div class="timeline-text">
+                            Блок меняется, когда готова ссылка на транзакцию.
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if not ns.active_order.show_tx_details %}
+                <div class="grid current-order-meta-grid">
+                    <div class="info-box">
+                        <div class="info-label">Сумма к оплате</div>
+                        <div class="info-value">{{ "%.2f"|format(ns.active_order.total_rub) }} ₽</div>
+                    </div>
+
+                    <div class="info-box">
+                        <div class="info-label">К выдаче</div>
+                        <div class="info-value">{{ "%.8f"|format(ns.active_order.btc_amount) }} {{ ns.active_order.coin }}</div>
+                    </div>
+
+                    <div class="info-box">
+                        <div class="info-label">Создана</div>
+                        <div class="info-value">{{ ns.active_order.created_at_view }}</div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if not ns.active_order.has_payment_details %}
+                <div class="waiting-box">
+                    <h3 style="margin-top:0;">Поиск оператора</h3>
+                    <div class="hint" style="margin-top:0;">
+                        Заявка создана и ожидает подключения оператора. Если вы передумали, можете отменить заявку.
+                    </div>
+
+                    <div class="action-row">
+                        <form method="post" action="/orders/{{ ns.active_order.order_id }}/cancel" class="inline">
+                            <button type="submit" class="btn btn-danger">Отменить</button>
+                        </form>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if ns.active_order.has_payment_details and not ns.active_order.show_tx_details %}
+                <div class="payment-box">
+                    <h3 style="margin-top:0;">Оплата</h3>
+
+                    <div class="grid">
+                        <div class="info-box">
+                            <div class="info-label">Сумма для перевода</div>
+                            <div class="info-value">{{ "%.2f"|format(ns.active_order.total_rub) }} ₽</div>
+                        </div>
+
+                        <div class="info-box">
+                            <div class="info-label">Банк</div>
+                            <div class="info-value">{{ ns.active_order.bank_name or "—" }}</div>
+                        </div>
+
+                        <div class="info-box">
+                            <div class="info-label">Реквизиты</div>
+                            <div class="copy-row">
+                                <div class="info-value copy-value" id="payment-details-value">
+                                    {{ ns.active_order.bank_card or "—" }}
+                                </div>
+                                {% if ns.active_order.bank_card %}
+                                <button
+                                    type="button"
+                                    class="btn-copy"
+                                    id="copy-payment-details-btn"
+                                    data-copy-text="{{ ns.active_order.bank_card }}"
+                                >
+                                    Скопировать реквизиты
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="hint">
+                        Точно сверяйте номер, банк и переводите <strong>СТРОГО ту СУММУ</strong>, которая <strong>УКАЗАНА</strong> в инструкции.
+                        Ошибка — деньги потеряны!
+                    </div>
+
+                    {% if ns.active_order.can_mark_paid or ns.active_order.can_cancel %}
+                    <div class="action-row">
+                        {% if ns.active_order.can_mark_paid %}
+                        <form method="post" action="/orders/{{ ns.active_order.order_id }}/paid" class="inline">
+                            <button type="submit" class="btn btn-success">Я оплатил</button>
+                        </form>
+                        {% endif %}
+
+                        {% if ns.active_order.can_cancel %}
+                        <form method="post" action="/orders/{{ ns.active_order.order_id }}/cancel" class="inline">
+                            <button type="submit" class="btn btn-danger">Отменить</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if ns.active_order.show_tx_details %}
+                <div class="success-box">
+                    <h3 style="margin-top:0;">Детали транзакции</h3>
+
+                    <div class="grid">
+                        <div class="info-box">
+                            <div class="info-label">Монета</div>
+                            <div class="info-value">{{ ns.active_order.coin }}</div>
+                        </div>
+
+                        <div class="info-box">
+                            <div class="info-label">К выдаче</div>
+                            <div class="info-value">{{ "%.8f"|format(ns.active_order.btc_amount) }} {{ ns.active_order.coin }}</div>
+                        </div>
+
+                        <div class="info-box">
+                            <div class="info-label">Кошелёк получателя</div>
+                            <div class="info-value">{{ ns.active_order.wallet or "—" }}</div>
+                        </div>
+
+                        <div class="info-box">
+                            <div class="info-label">Ссылка на транзакцию</div>
+                            <div class="info-value">
+                                {% if ns.active_order.tx_to %}
+                                    <a href="{{ ns.active_order.tx_to }}" target="_blank" rel="noopener noreferrer">{{ ns.active_order.tx_to }}</a>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="card">
+                <div class="empty-state">
+                    <div class="empty-state-title">Активных заявок пока нет</div>
+                    <div class="empty-state-text">
+                        Как только вы создадите новую заявку, она появится здесь автоматически.
+                        После этого страница начнёт обновляться сама, чтобы вы видели изменения по статусу.
+                    </div>
+                    <div class="new-order-cta">
+                        <a href="/orders/new" class="btn btn-success">Создать новую заявку</a>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="card">
+                <h2>История</h2>
+
+                {% set history_ns = namespace(has_items=False) %}
+
+                {% if orders %}
+                    {% for order in orders %}
+                        {% if not order.is_active_for_web %}
+                            {% set history_ns.has_items = True %}
+                            <div class="history-item">
+                                <div class="history-top">
+                                    <strong>#{{ order.order_id }}</strong>
+                                    <span class="status-badge status-{{ order.status_class }}">{{ order.status_label }}</span>
+                                </div>
+
+                                <div class="history-meta">
+                                    {{ "%.2f"|format(order.total_rub) }} ₽ ·
+                                    {{ "%.8f"|format(order.btc_amount) }} {{ order.coin }} ·
+                                    Создана: {{ order.created_at_view }}
+                                </div>
+
+                                {% if order.has_payment_details %}
+                                <div class="history-meta" style="margin-top:8px;">
+                                    Банк: {{ order.bank_name or "—" }}
+                                </div>
+                                {% endif %}
+
+                                {% if order.tx_to %}
+                                <div class="history-meta" style="margin-top:8px;">
+                                    Перевод монет:
+                                    <a href="{{ order.tx_to }}" target="_blank" rel="noopener noreferrer">{{ order.tx_to }}</a>
+                                </div>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+
+                {% if not history_ns.has_items %}
+                    {% if is_guest_mode %}
+                        <p class="muted">История заявок в текущей сессии пока пуста.</p>
+                    {% else %}
+                        <p class="muted">Завершённых или отменённых заявок пока нет.</p>
+                    {% endif %}
+                {% endif %}
+            </div>
+
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        (() => {
+            const POLL_INTERVAL_MS = 4000;
+
+            let webExpireSecondsLeft = 0;
+            let showWebExpireTimer = false;
+            let pollInFlight = false;
+
+            const getLiveRoot = () => document.getElementById("orders-live-root");
+            const getLatestCard = () => document.getElementById("latest-order-card");
+            const getExpireTimerValue = () => document.getElementById("web-expire-timer-value");
+
+            const fallbackCopyText = (text) => {
+                const textarea = document.createElement("textarea");
+                textarea.value = text;
+                textarea.setAttribute("readonly", "");
+                textarea.style.position = "absolute";
+                textarea.style.left = "-9999px";
+                document.body.appendChild(textarea);
+                textarea.select();
+                textarea.setSelectionRange(0, textarea.value.length);
+
+                let ok = false;
+                try {
+                    ok = document.execCommand("copy");
+                } catch (e) {
+                    ok = false;
+                }
+
+                document.body.removeChild(textarea);
+                return ok;
+            };
+
+            const markCopySuccess = (button) => {
+                if (!button) return;
+                const originalText = button.dataset.originalText || "Скопировать реквизиты";
+                button.textContent = "Скопировано";
+                button.classList.add("copied");
+
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.classList.remove("copied");
+                }, 2000);
+            };
+
+            const setupCopyButtons = () => {
+                const buttons = document.querySelectorAll(".btn-copy[data-copy-text]");
+                buttons.forEach((button) => {
+                    if (button.dataset.bound === "1") {
+                        return;
+                    }
+
+                    button.dataset.bound = "1";
+                    button.dataset.originalText = button.textContent;
+
+                    button.addEventListener("click", async function () {
+                        const text = this.dataset.copyText || "";
+                        if (!text) return;
+
+                        let copied = false;
+
+                        if (navigator.clipboard && window.isSecureContext) {
+                            try {
+                                await navigator.clipboard.writeText(text);
+                                copied = true;
+                            } catch (e) {
+                                copied = false;
+                            }
+                        }
+
+                        if (!copied) {
+                            copied = fallbackCopyText(text);
+                        }
+
+                        if (copied) {
+                            markCopySuccess(this);
+                        } else {
+                            alert("Не удалось скопировать реквизиты автоматически. Скопируйте их вручную.");
+                        }
+                    });
+                });
+            };
+
+            const formatExpireTime = (seconds) => {
+                const safe = Math.max(0, parseInt(seconds || 0, 10));
+                const minutes = Math.floor(safe / 60);
+                const secs = safe % 60;
+                return `${minutes}:${String(secs).padStart(2, "0")}`;
+            };
+
+            const syncTimerFromDom = () => {
+                const latestCard = getLatestCard();
+                const expireTimerValue = getExpireTimerValue();
+
+                if (!latestCard) {
+                    showWebExpireTimer = false;
+                    webExpireSecondsLeft = 0;
+                    return;
+                }
+
+                showWebExpireTimer = String(latestCard.dataset.showWebExpireTimer || "0") === "1";
+                webExpireSecondsLeft = parseInt(latestCard.dataset.webExpireSecondsLeft || "0", 10) || 0;
+
+                if (showWebExpireTimer && expireTimerValue) {
+                    expireTimerValue.textContent = formatExpireTime(webExpireSecondsLeft);
+                }
+            };
+
+            const refreshLiveOrders = async () => {
+                if (pollInFlight || document.hidden) {
+                    return;
+                }
+
+                const liveRoot = getLiveRoot();
+                if (!liveRoot) {
+                    return;
+                }
+
+                pollInFlight = true;
+
+                try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("_live", String(Date.now()));
+
+                    const response = await fetch(url.toString(), {
+                        method: "GET",
+                        headers: {
+                            "Accept": "text/html",
+                            "X-Requested-With": "fetch"
+                        },
+                        cache: "no-store"
+                    });
+
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    const html = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, "text/html");
+                    const incomingRoot = doc.getElementById("orders-live-root");
+
+                    if (!incomingRoot) {
+                        return;
+                    }
+
+                    liveRoot.innerHTML = incomingRoot.innerHTML;
+                    setupCopyButtons();
+                    syncTimerFromDom();
+                } catch (e) {
+                    // silently ignore temporary network errors
+                } finally {
+                    pollInFlight = false;
+                }
+            };
+
+            setupCopyButtons();
+            syncTimerFromDom();
+
+            setInterval(() => {
+                const expireTimerValue = getExpireTimerValue();
+
+                if (!showWebExpireTimer || !expireTimerValue) {
+                    return;
+                }
+
+                webExpireSecondsLeft -= 1;
+
+                if (webExpireSecondsLeft <= 0) {
+                    webExpireSecondsLeft = 0;
+                    expireTimerValue.textContent = "0:00";
+                    refreshLiveOrders();
+                    return;
+                }
+
+                expireTimerValue.textContent = formatExpireTime(webExpireSecondsLeft);
+            }, 1000);
+
+            setInterval(() => {
+                if (!getLatestCard()) {
+                    return;
+                }
+
+                refreshLiveOrders();
+            }, POLL_INTERVAL_MS);
+        })();
+    </script>
+</body>
+</html>

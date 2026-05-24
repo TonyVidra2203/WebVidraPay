@@ -1,0 +1,13 @@
+.env
+*.env
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.pyc
+venv/
+webapp/venv/
+.idea/
+.DS_Store
+nohup.out
+*.zip

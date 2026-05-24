@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Пользователи</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            color: #1f2937;
+        }
+
+        .wrap {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+        }
+
+        h1, h2 {
+            margin-top: 0;
+        }
+
+        .topnav {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 16px;
+            border-radius: 10px;
+            background: #111827;
+            color: white;
+            text-decoration: none;
+        }
+
+        .btn-light {
+            background: #e5e7eb;
+            color: #111827;
+        }
+
+        .muted {
+            color: #6b7280;
+        }
+
+        .err {
+            padding: 14px 16px;
+            border-radius: 12px;
+            background: #fff1f1;
+            border: 1px solid #f1c5c5;
+            color: #8a1f1f;
+            white-space: pre-wrap;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th, td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: #f9fafb;
+        }
+
+        .empty {
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+
+
+        <div class="card">
+            <h1>Пользователи</h1>
+            <p><strong>Всего пользователей:</strong> {{ users_count }}</p>
+            <p class="muted">Показаны последние 50 записей из таблицы users.</p>
+        </div>
+
+        {% if error %}
+            <div class="card">
+                <h2>Ошибка</h2>
+                <div class="err">{{ error }}</div>
+            </div>
+        {% else %}
+            <div class="card">
+                {% if users %}
+                    <table>
+                        <thead>
+                            <tr>
+                                {% for key in users[0].keys() %}
+                                    <th>{{ key }}</th>
+                                {% endfor %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in users %}
+                                <tr>
+                                    {% for value in user.values() %}
+                                        <td>{{ value }}</td>
+                                    {% endfor %}
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <div class="empty">В таблице users пока нет данных.</div>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>

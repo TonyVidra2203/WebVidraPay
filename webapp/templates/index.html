@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            color: #1f2937;
+        }
+
+        .wrap {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+        }
+
+        h1, h2 {
+            margin-top: 0;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+        }
+
+        .menu-link {
+            display: block;
+            padding: 18px;
+            border-radius: 14px;
+            background: #111827;
+            color: white;
+            text-decoration: none;
+            font-size: 16px;
+        }
+
+        .muted {
+            color: #6b7280;
+        }
+
+        .topbar {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .btn-light {
+            display: inline-block;
+            padding: 10px 16px;
+            border-radius: 10px;
+            background: #e5e7eb;
+            color: #111827;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="card">
+            <div class="topbar">
+                <div>
+                    <h1>{{ title }}</h1>
+                    <p>Это основа будущей веб-версии бота.</p>
+                </div>
+                <div>
+                    {% if current_user_id %}
+                        <div class="muted">Вы вошли как user_id: <strong>{{ current_user_id }}</strong></div>
+                        <br>
+                        <a class="btn-light" href="/logout">Выйти</a>
+                    {% else %}
+                        <a class="btn-light" href="/login">Войти</a>
+                    {% endif %}
+                </div>
+            </div>
+            <p class="muted">Сейчас мы переводим проект из технического режима в реальный пользовательский поток.</p>
+        </div>
+
+        <div class="card">
+            <h2>Разделы</h2>
+            <div class="grid">
+                <a class="menu-link" href="/users">Пользователи</a>
+                <a class="menu-link" href="/orders">Заявки P2P</a>
+                <a class="menu-link" href="/orders/new">Создать заявку</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

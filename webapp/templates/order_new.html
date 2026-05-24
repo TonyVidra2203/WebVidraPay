@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Новая заявка — ВыДрА</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #000000;
+            --bg-soft: #12131a;
+            --panel: rgba(20, 20, 28, 0.92);
+            --panel-2: rgba(28, 28, 38, 0.95);
+            --text: #f3ead7;
+            --muted: #b8ab8b;
+            --gold: #d8b26a;
+            --gold-strong: #f0c879;
+            --border: rgba(216, 178, 106, 0.22);
+            --danger: #ff8f8f;
+            --danger-bg: rgba(120, 22, 22, 0.22);
+            --success-bg: linear-gradient(135deg, #1a140d, #2a2115);
+            --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000000;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+
+        html::-webkit-scrollbar,
+        body::-webkit-scrollbar,
+        .page::-webkit-scrollbar,
+        .wrap::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+            display: none;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background:
+                radial-gradient(circle at top, rgba(216, 178, 106, 0.10), transparent 30%),
+                linear-gradient(180deg, #000000 0%, #0a0a0d 35%, #111218 100%);
+            color: var(--text);
+        }
+
+        .page {
+            min-height: 100vh;
+            padding: 24px 16px 40px;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+
+        .wrap {
+            width: 100%;
+            max-width: 1120px;
+            margin: 0 auto;
+            overflow-x: hidden;
+        }
+
+        .hero-card {
+            border-radius: 28px;
+            background: transparent;
+            margin-bottom: 0;
+        }
+
+        .hero-image-wrap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 0;
+        }
+
+        .hero-image {
+            display: block;
+            width: 100%;
+            max-width: 920px;
+            height: auto;
+            object-fit: contain;
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+        }
+
+        .topnav {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            align-items: stretch;
+            width: 100%;
+        }
+
+        .under-logo-nav {
+            width: 100%;
+            max-width: 920px;
+            margin: 20px auto 24px;
+        }
+
+        .btn-nav {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-width: 0;
+            min-height: 48px;
+            padding: 12px 14px;
+            border-radius: 999px;
+            text-decoration: none;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.2;
+            text-align: center;
+            white-space: normal;
+            cursor: pointer;
+            transition: 0.2s ease;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+        }
+
+        .btn-nav:hover {
+            transform: translateY(-1px);
+            background: rgba(216, 178, 106, 0.10);
+        }
+
+        .btn-nav-light {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .btn-nav-danger {
+            background: rgba(180, 40, 40, 0.18);
+            border-color: rgba(255, 120, 120, 0.25);
+        }
+
+        .card {
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+        }
+
+        h1, h2 {
+            margin-top: 0;
+            color: #fff3d8;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .err {
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: var(--danger-bg);
+            border: 1px solid rgba(255, 143, 143, 0.25);
+            color: #ffd2d2;
+            white-space: pre-wrap;
+        }
+
+        .section-title {
+            margin-bottom: 8px;
+        }
+
+        .section-note {
+            margin: 0 0 18px 0;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--muted);
+        }
+
+        .tbank-warning {
+            margin: 0 0 20px 0;
+            padding: 16px 18px;
+            border-radius: 16px;
+            background: rgba(120, 22, 22, 0.30);
+            border: 1px solid rgba(255, 120, 120, 0.28);
+            color: #ffd7d7;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .tbank-warning-title {
+            display: block;
+            margin-bottom: 8px;
+            color: #fff0f0;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1.1fr;
+            gap: 22px;
+            align-items: start;
+        }
+
+        .left-col,
+        .right-col {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .field-full {
+            margin-top: 18px;
+        }
+
+        .field-separator {
+            margin-top: 8px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(216, 178, 106, 0.14);
+        }
+
+        .amount-result-box {
+            display: none;
+            margin-top: 2px;
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(216, 178, 106, 0.14);
+        }
+
+        .amount-result-box.show {
+            display: block;
+        }
+
+        .amount-result-label {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .amount-result-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff2d3;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .amount-input-meta {
+            font-size: 13px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        label {
+            font-size: 14px;
+            font-weight: 700;
+            color: #fff0cf;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 14px;
+            border: 1px solid rgba(216, 178, 106, 0.18);
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text);
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        }
+
+        input:focus, select:focus {
+            border-color: rgba(240, 200, 121, 0.65);
+            box-shadow: 0 0 0 4px rgba(216, 178, 106, 0.12);
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        select option {
+            background: #1b1c24;
+            color: #f3ead7;
+        }
+
+        .hint,
+        .field-note {
+            font-size: 13px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .field-warning {
+            display: none;
+            font-size: 13px;
+            color: #ffd6d6;
+            background: rgba(120, 22, 22, 0.22);
+            border: 1px solid rgba(255, 143, 143, 0.22);
+            border-radius: 12px;
+            padding: 10px 12px;
+            line-height: 1.45;
+        }
+
+        .field-warning.show {
+            display: block;
+        }
+
+        .block-order-card {
+            background: linear-gradient(135deg, #16120d, #211910);
+            border: 1px solid rgba(240, 200, 121, 0.20);
+            border-radius: 22px;
+            padding: 22px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+        }
+
+        .block-order-title {
+            margin: 0 0 10px 0;
+            color: #fff3d8;
+            font-size: 24px;
+            line-height: 1.2;
+        }
+
+        .block-order-text {
+            margin: 0;
+            color: #e9dcc0;
+            line-height: 1.6;
+            font-size: 15px;
+        }
+
+        .block-order-meta {
+            margin-top: 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .block-order-box {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(216, 178, 106, 0.14);
+            border-radius: 16px;
+            padding: 14px 16px;
+        }
+
+        .block-order-label {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            line-height: 1.35;
+        }
+
+        .block-order-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff2d3;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .block-order-actions {
+            margin-top: 18px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 14px 26px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text);
+            text-decoration: none;
+            border: 1px solid rgba(216, 178, 106, 0.18);
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 700;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+            transition: 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-1px);
+            background: rgba(216, 178, 106, 0.10);
+        }
+
+        .commission-box {
+            background: var(--success-bg);
+            color: #fff8e8;
+            border-radius: 22px;
+            padding: 24px;
+            border: 1px solid rgba(240, 200, 121, 0.22);
+            box-shadow: inset 0 1px 0 rgba(255, 236, 189, 0.08);
+            margin-top: 20px;
+        }
+
+        .commission-box-desktop {
+            margin-top: 0;
+        }
+
+        .commission-box-mobile {
+            display: none;
+        }
+
+        .commission-label {
+            font-size: 13px;
+            color: #d8c7a1;
+            margin-bottom: 10px;
+        }
+
+        .commission-amount {
+            font-size: 38px;
+            font-weight: 700;
+            line-height: 1.1;
+            color: #ffd892;
+            word-break: break-word;
+        }
+
+        .commission-subtext {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #efe2c3;
+            line-height: 1.5;
+        }
+
+        .commission-subtext-line {
+            display: block;
+        }
+
+        .commission-rate {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #d8c7a1;
+            line-height: 1.5;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 14px 26px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #c79646, #f0c879);
+            color: #1a140d;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 700;
+            box-shadow: 0 12px 30px rgba(216, 178, 106, 0.24);
+            transition: 0.2s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        @media (max-width: 900px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-image {
+                max-width: 100%;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .page {
+                padding: 14px 12px 28px;
+            }
+
+            .hero-card,
+            .card {
+                border-radius: 20px;
+            }
+
+            .btn {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .btn-nav {
+                width: 100%;
+                min-width: 0;
+                min-height: 44px;
+                padding: 10px 8px;
+                font-size: 12px;
+            }
+
+            .card {
+                padding: 18px;
+            }
+
+            .commission-amount {
+                font-size: 28px;
+            }
+
+            .under-logo-nav {
+                margin: 14px auto 18px;
+                gap: 8px;
+            }
+
+            .hero-image {
+                border-radius: 18px;
+            }
+
+            .block-order-card {
+                border-radius: 20px;
+                padding: 18px;
+            }
+
+            .block-order-title {
+                font-size: 21px;
+            }
+
+            .block-order-text {
+                font-size: 14px;
+            }
+
+            .block-order-actions {
+                flex-direction: column;
+            }
+
+            .btn-secondary {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .section-title {
+                margin-bottom: 6px;
+            }
+
+            .section-note {
+                font-size: 12px;
+                margin-bottom: 16px;
+            }
+
+            .tbank-warning {
+                padding: 14px 14px;
+                font-size: 13px;
+                border-radius: 14px;
+            }
+
+            .commission-box-desktop {
+                display: none;
+            }
+
+            .commission-box-mobile {
+                display: block;
+                margin-top: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="wrap">
+            <div class="hero-card">
+                <div class="hero-image-wrap">
+                    <img class="hero-image" src="/static/img/vydra-logo.jpg" alt="ВыДрА — Надёжный обменник">
+                </div>
+            </div>
+
+            <div class="topnav under-logo-nav">
+                {% if is_guest_mode %}
+                    <a class="btn-nav" href="/login">Войти</a>
+                {% else %}
+                    <a class="btn-nav btn-nav-danger" href="/logout">Выйти из аккаунта</a>
+                {% endif %}
+
+                <a class="btn-nav" href="https://t.me/Vidraobmen_bot" target="_blank" rel="noopener noreferrer">Telegram-бот</a>
+                <a class="btn-nav btn-nav-light" href="/orders">Мои заявки</a>
+            </div>
+
+            {% if blocking_order_id %}
+                <div class="block-order-card">
+                    <h2 class="block-order-title">Предыдущая заявка ещё активна</h2>
+                    <p class="block-order-text">
+                        Новую заявку пока создавать нельзя. Как только текущая заявка окончательно уйдёт в историю,
+                        вы сможете сразу оформить следующую.
+                    </p>
+
+                    <div class="block-order-meta">
+                        <div class="block-order-box">
+                            <div class="block-order-label">Номер заявки</div>
+                            <div class="block-order-value">#{{ blocking_order_id }}</div>
+                        </div>
+
+                        <div class="block-order-box">
+                            <div class="block-order-label">Текущий статус</div>
+                            <div class="block-order-value">{{ blocking_order_status_label }}</div>
+                        </div>
+
+                        {% if blocking_order_seconds_left and blocking_order_seconds_left > 0 %}
+                        <div class="block-order-box">
+                            <div class="block-order-label">Можно будет создать новую через</div>
+                            <div class="block-order-value" id="blocking-order-timer-value">
+                                {{ (blocking_order_seconds_left // 60) }}:{{ '%02d' % (blocking_order_seconds_left % 60) }}
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {% if blocking_order_hint %}
+                        <p class="block-order-text" style="margin-top:16px;">{{ blocking_order_hint }}</p>
+                    {% endif %}
+
+                    <div class="block-order-actions">
+                        <a class="btn" href="/orders">Открыть мои заявки</a>
+                        <a class="btn-secondary" href="/orders/new">Обновить страницу</a>
+                    </div>
+                </div>
+            {% elif error %}
+                <div class="card">
+                    <h2>Ошибка</h2>
+                    <div class="err">{{ error }}</div>
+                </div>
+            {% endif %}
+
+            {% if not blocking_order_id %}
+            <div class="card">
+                <form method="post" action="/orders/new" id="order-form">
+                    <h2 class="section-title">Оформление заявки</h2>
+                    <p class="section-note">
+                        На оплату заявки выделяется 30 минут. По истечении этого времени неоплаченная заявка удаляется.
+                    </p>
+
+                    <div class="tbank-warning">
+                        <span class="tbank-warning-title">⚠️ ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ</span>
+                        Оплата через <strong>Т-Банк</strong> временно приостановлена.<br><br>
+                        Пожалуйста, <strong>не пытайтесь оплачивать заявки через Т-Банк</strong>.
+                        Переводы из Т-Банка могут быть удержаны системой без дальнейшего обмена и возврата средств.<br><br>
+                        Используйте другой банк для оплаты заявки.
+                    </div>
+
+                    <div class="form-grid">
+                        <div class="left-col">
+                            <div class="field">
+                                <label for="coin">Монета</label>
+                                <select id="coin" name="coin" required>
+                                    <option value="USDT">USDT (TRC20)</option>
+                                    <option value="LTC">LTC (Litecoin)</option>
+                                    <option value="XMR">XMR (Monero)</option>
+                                    <option value="BTC" selected>BTC (Bitcoin)</option>
+                                </select>
+                            </div>
+
+                            <div class="commission-box commission-box-desktop">
+                                <div class="commission-label">Итоговая сумма с комиссией обменника</div>
+                                <div class="commission-amount commission-total-js">—</div>
+                                <div class="commission-subtext">
+                                    <span class="commission-subtext-line commission-rub-js">Введите сумму в одном из полей справа</span>
+                                    <span class="commission-subtext-line commission-coin-js"></span>
+                                </div>
+                                <div class="commission-rate commission-rate-js">Текущий курс USD → RUB: —</div>
+                            </div>
+                        </div>
+
+                        <div class="right-col">
+                            <div class="field">
+                                <label for="input_mode">Укажи количество Монет или RUB, которое хочешь получить на свой кошелек
+                                    (с запасом)</label>
+                                <select id="input_mode" name="input_mode">
+                                    <option value="rub" selected>Сумму в RUB</option>
+                                    <option value="coin">Количество монет</option>
+                                </select>
+
+                            </div>
+
+                            <div class="field">
+                                <label for="active_amount" id="active_amount_label">Сумма в RUB</label>
+
+                                <input type="number" step="1" min="1200" id="active_amount" inputmode="decimal" required>
+
+                                <div class="amount-result-box" id="amount_result_box">
+                                    <div class="amount-result-label" id="amount_result_label">Рассчитанная сумма</div>
+                                    <div class="amount-result-value" id="amount_result_value">—</div>
+                                </div>
+                                <div class="field-warning" id="rub_min_warning">
+                                    Минимальная сумма заявки — 1200 ₽. Увеличьте сумму и попробуйте снова.
+                                </div>
+                            </div>
+
+                            <div class="field field-separator">
+                                <label for="payment_details_type">СБП или Карта?</label>
+                                <select id="payment_details_type" name="payment_details_type" required>
+                                    <option value="card" selected>Перевод по номеру карты</option>
+                                    <option value="sbp">Перевод по СБП</option>
+                                </select>
+                            </div>
+
+                            <input type="hidden" step="1" min="1200" id="rub_amount" name="rub_amount" required>
+                            <input type="hidden" step="0.00000001" min="0" id="btc_amount" name="btc_amount" required>
+                        </div>
+                    </div>
+
+                    <div class="field field-full">
+                        <label for="wallet">Ваш кошелек для пополнения</label>
+                        <input type="text" id="wallet" name="wallet" required>
+                    </div>
+
+                    <div class="commission-box commission-box-mobile">
+                        <div class="commission-label">Итоговая сумма с комиссией обменника</div>
+                        <div class="commission-amount commission-total-js">—</div>
+                        <div class="commission-subtext">
+                            <span class="commission-subtext-line commission-rub-js">Введите сумму в одном из полей выше</span>
+                            <span class="commission-subtext-line commission-coin-js"></span>
+                        </div>
+                        <div class="commission-rate commission-rate-js">Текущий курс USD → RUB: —</div>
+                    </div>
+
+                    <input type="hidden" name="comment" value="по P2P">
+
+                    <div style="margin-top:20px;">
+                        <button class="btn" type="submit">Создать заявку</button>
+                    </div>
+                </form>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        const DEFAULT_MIN_RUB_AMOUNT = 1200;
+        const blockingOrderTimerElement = document.getElementById("blocking-order-timer-value");
+
+        function formatBlockingSeconds(totalSeconds) {
+            const safe = Math.max(0, parseInt(totalSeconds || 0, 10));
+            const minutes = Math.floor(safe / 60);
+            const seconds = safe % 60;
+            return `${minutes}:${String(seconds).padStart(2, "0")}`;
+        }
+
+        if (blockingOrderTimerElement) {
+            let blockingSecondsLeft = {{ blocking_order_seconds_left or 0 }};
+
+            blockingOrderTimerElement.textContent = formatBlockingSeconds(blockingSecondsLeft);
+
+            setInterval(() => {
+                if (blockingSecondsLeft <= 0) {
+                    window.location.href = "/orders/new";
+                    return;
+                }
+
+                blockingSecondsLeft -= 1;
+                blockingOrderTimerElement.textContent = formatBlockingSeconds(blockingSecondsLeft);
+            }, 1000);
+        }
+
+        const XMR_MIN_RUB_AMOUNT = 6000;
+
+        const coinSelect = document.getElementById("coin");
+        const orderForm = document.getElementById("order-form");
+        const inputModeSelect = document.getElementById("input_mode");
+
+        const activeAmountInput = document.getElementById("active_amount");
+        const activeAmountLabel = document.getElementById("active_amount_label");
+        const rubInput = document.getElementById("rub_amount");
+        const coinAmountInput = document.getElementById("btc_amount");
+
+        const rubMinWarning = document.getElementById("rub_min_warning");
+        const rubMinNote = document.getElementById("rub_min_note");
+        const amountInputHint = document.getElementById("amount_input_hint");
+        const amountResultBox = document.getElementById("amount_result_box");
+        const amountResultLabel = document.getElementById("amount_result_label");
+        const amountResultValue = document.getElementById("amount_result_value");
+
+        const commissionTotalElements = document.querySelectorAll(".commission-total-js");
+        const commissionRubElements = document.querySelectorAll(".commission-rub-js");
+        const commissionCoinElements = document.querySelectorAll(".commission-coin-js");
+        const commissionRateElements = document.querySelectorAll(".commission-rate-js");
+
+        let calculateAbortController = null;
+        let calculateRequestSeq = 0;
+        let submitInProgress = false;
+        let isSyncingFromServer = false;
+        let lastEditedField = "rub";
+
+        function formatRub(value) {
+            return new Intl.NumberFormat("ru-RU", {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(Math.round(Number(value) || 0)) + " ₽";
+        }
+
+        function formatRate(value) {
+            return new Intl.NumberFormat("ru-RU", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 4
+            }).format(Number(value) || 0);
+        }
+
+        function getCoinDigits(coin) {
+            if (coin === "USDT") {
+                return 3;
+            }
+            return 8;
+        }
+
+        function getCoinStep(coin) {
+            if (coin === "USDT") {
+                return "0.001";
+            }
+            return "0.00000001";
+        }
+
+        function formatCoin(value, coin) {
+            const digits = getCoinDigits(coin);
+            return new Intl.NumberFormat("ru-RU", {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits
+            }).format(Number(value) || 0) + " " + coin;
+        }
+
+        function getMinRubAmount() {
+            return coinSelect.value === "XMR" ? XMR_MIN_RUB_AMOUNT : DEFAULT_MIN_RUB_AMOUNT;
+        }
+
+        function setCommissionText(totalText, rubText, coinText) {
+            commissionTotalElements.forEach((element) => {
+                element.textContent = totalText;
+            });
+
+            commissionRubElements.forEach((element) => {
+                element.textContent = rubText;
+            });
+
+            commissionCoinElements.forEach((element) => {
+                element.textContent = coinText;
+            });
+        }
+
+        function setRateText(rateText) {
+            commissionRateElements.forEach((element) => {
+                element.textContent = rateText;
+            });
+        }
+
+        function setLoadingState() {
+            setCommissionText("…", "Получаем актуальный курс…", "");
+            amountResultBox.classList.remove("show");
+            amountResultLabel.textContent = "Рассчитанная сумма";
+            amountResultValue.textContent = "Получаем актуальный курс…";
+        }
+
+        function setEmptyState() {
+            setCommissionText("—", "Введите сумму в активное поле", "");
+            setRateText("Текущий курс USD → RUB: —");
+            amountResultBox.classList.remove("show");
+            amountResultLabel.textContent = "Рассчитанная сумма";
+            amountResultValue.textContent = "—";
+        }
+
+        function setErrorState(message) {
+            setCommissionText("—", message || "Не удалось выполнить расчёт", "");
+            amountResultBox.classList.add("show");
+            amountResultLabel.textContent = "Ошибка расчёта";
+            amountResultValue.textContent = message || "Не удалось выполнить расчёт";
+        }
+
+        function updateMinRubUi() {
+            const minRub = getMinRubAmount();
+
+            if (rubMinNote) {
+
+            }
+
+            if (rubMinWarning) {
+                rubMinWarning.textContent = "Минимальная сумма заявки — " + formatRub(minRub) + ". Увеличьте сумму и попробуйте снова.";
+            }
+        }
+
+        function updateInputModeUi() {
+            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+            const coin = coinSelect.value;
+
+            if (mode === "coin") {
+                activeAmountLabel.textContent = "Количество монет";
+                activeAmountInput.placeholder = "Введите количество " + coin;
+                activeAmountInput.step = getCoinStep(coin);
+                activeAmountInput.min = "0";
+
+            } else {
+                activeAmountLabel.textContent = "Сумма в RUB";
+                activeAmountInput.placeholder = "Введите сумму в RUB";
+                activeAmountInput.step = "1";
+                activeAmountInput.min = String(getMinRubAmount());
+
+            }
+        }
+
+        function updateResultUi(data) {
+            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+
+            amountResultBox.classList.add("show");
+
+            if (mode === "coin") {
+                amountResultLabel.textContent = "Будет рассчитано в RUB";
+                amountResultValue.textContent = formatRub(data.rub_amount);
+            } else {
+                amountResultLabel.textContent = "Будет рассчитано в " + data.coin;
+                amountResultValue.textContent = formatCoin(data.coin_amount, data.coin);
+            }
+        }
+
+        function toggleRubWarning(rubValue) {
+            if (!rubMinWarning) {
+                return;
+            }
+
+            const minRub = getMinRubAmount();
+
+            if (rubValue > 0 && rubValue < minRub) {
+                rubMinWarning.classList.add("show");
+            } else {
+                rubMinWarning.classList.remove("show");
+            }
+        }
+
+        function clearCalculatedFields() {
+            rubInput.value = "";
+            coinAmountInput.value = "";
+        }
+
+        function buildParamsForRequest() {
+            const coin = coinSelect.value;
+            const rawValue = parseFloat(activeAmountInput.value);
+            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+
+            if (!(rawValue > 0)) {
+                return null;
+            }
+
+            if (mode === "coin") {
+                return {
+                    coin: coin,
+                    coin_amount: String(rawValue)
+                };
+            }
+
+            return {
+                coin: coin,
+                rub_amount: String(rawValue)
+            };
+        }
+
+        async function fetchCalculation() {
+            const paramsObject = buildParamsForRequest();
+
+            if (!paramsObject) {
+                clearCalculatedFields();
+                toggleRubWarning(0);
+                setEmptyState();
+                return false;
+            }
+
+            if (calculateAbortController) {
+                calculateAbortController.abort();
+            }
+
+            calculateAbortController = new AbortController();
+            const requestId = ++calculateRequestSeq;
+
+            setLoadingState();
+
+            try {
+                const params = new URLSearchParams(paramsObject);
+
+                const response = await fetch(`/orders/calculate?${params.toString()}`, {
+                    method: "GET",
+                    headers: {
+                        "Accept": "application/json"
+                    },
+                    signal: calculateAbortController.signal
+                });
+
+                const data = await response.json();
+
+                if (requestId !== calculateRequestSeq) {
+                    return false;
+                }
+
+                setRateText(
+                    data && data.usd_rub_rate
+                        ? `Текущий курс USD → RUB: ${formatRate(data.usd_rub_rate)}`
+                        : "Текущий курс USD → RUB: —"
+                );
+
+                updateMinRubUi();
+
+                if (!response.ok || !data.ok) {
+                    clearCalculatedFields();
+                    toggleRubWarning(Number(data && data.rub_amount ? data.rub_amount : 0));
+                    setErrorState(data.error || "Не удалось выполнить расчёт");
+                    return false;
+                }
+
+                const digits = getCoinDigits(data.coin);
+
+                isSyncingFromServer = true;
+                rubInput.value = String(Math.round(Number(data.rub_amount) || 0));
+                coinAmountInput.value = Number(data.coin_amount).toFixed(digits);
+                isSyncingFromServer = false;
+
+                toggleRubWarning(Number(data.rub_amount) || 0);
+
+                setCommissionText(
+                    formatRub(data.total_rub),
+                    "Необходимая сумма в RUB: " + formatRub(data.rub_amount),
+                    "В монете: " + formatCoin(data.coin_amount, data.coin)
+                );
+
+                updateResultUi(data);
+                return true;
+            } catch (error) {
+                if (error && error.name === "AbortError") {
+                    return false;
+                }
+
+                clearCalculatedFields();
+                setRateText("Текущий курс USD → RUB: —");
+                setErrorState("Ошибка получения курса. Попробуйте ещё раз.");
+                return false;
+            }
+        }
+
+        activeAmountInput.addEventListener("input", () => {
+            if (isSyncingFromServer) {
+                return;
+            }
+
+            lastEditedField = inputModeSelect.value === "coin" ? "coin" : "rub";
+            fetchCalculation();
+        });
+
+        coinSelect.addEventListener("change", () => {
+            updateMinRubUi();
+            updateInputModeUi();
+            clearCalculatedFields();
+            toggleRubWarning(0);
+            setEmptyState();
+
+            if (activeAmountInput.value) {
+                fetchCalculation();
+            }
+        });
+
+        inputModeSelect.addEventListener("change", () => {
+            updateInputModeUi();
+            activeAmountInput.value = "";
+            clearCalculatedFields();
+            toggleRubWarning(0);
+            setEmptyState();
+        });
+
+        orderForm.addEventListener("submit", async (event) => {
+            if (submitInProgress) {
+                return;
+            }
+
+            event.preventDefault();
+
+            const rawValue = parseFloat(activeAmountInput.value);
+            const minRub = getMinRubAmount();
+            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+
+            if (!rawValue || rawValue <= 0) {
+                alert(mode === "coin"
+                    ? `Введите корректное количество ${coinSelect.value}.`
+                    : "Введите корректную сумму в RUB.");
+                return;
+            }
+
+            submitInProgress = true;
+
+            try {
+                const ok = await fetchCalculation();
+
+                if (!ok || !coinAmountInput.value || !rubInput.value) {
+                    alert("Не удалось рассчитать заявку. Проверьте введённые данные.");
+                    submitInProgress = false;
+                    return;
+                }
+
+                const rub = parseFloat(rubInput.value);
+
+                if (!rub || rub < minRub) {
+                    toggleRubWarning(rub || 0);
+                    alert(`Минимальная сумма заявки для ${coinSelect.value} — ${formatRub(minRub)}.`);
+                    submitInProgress = false;
+                    return;
+                }
+
+                orderForm.submit();
+            } catch (error) {
+                submitInProgress = false;
+                alert("Ошибка расчёта. Попробуйте ещё раз.");
+            }
+        });
+
+        updateMinRubUi();
+        updateInputModeUi();
+        setEmptyState();
+    </script>
+</body>
+</html>
