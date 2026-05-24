@@ -967,13 +967,44 @@ def _render_base_page(
         }}
 
         .logo {{
+            position: relative;
             width: 58px;
             height: 58px;
             flex: 0 0 58px;
             border-radius: 18px;
-            object-fit: cover;
+            overflow: hidden;
             border: 1px solid var(--accent-line);
+            background:
+                radial-gradient(circle at 30% 20%, rgba(214, 179, 95, .25), transparent 42%),
+                linear-gradient(135deg, rgba(214, 179, 95, .16), rgba(255, 255, 255, .045));
             box-shadow: 0 10px 26px rgba(0, 0, 0, .28);
+        }}
+
+        .logo-img {{
+            position: relative;
+            z-index: 2;
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border: 0;
+        }}
+
+        .logo-img.is-hidden {{
+            display: none;
+        }}
+
+        .logo-fallback {{
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            display: grid;
+            place-items: center;
+            color: var(--accent);
+            font-size: 22px;
+            font-weight: 950;
+            letter-spacing: -.8px;
+            line-height: 1;
         }}
 
         .brand {{
@@ -1422,6 +1453,8 @@ def _render_base_page(
         }}
 
         .payment-actions {{
+            width: 100%;
+            min-width: 0;
             display: grid;
             grid-template-columns: 1.35fr 1fr;
             gap: 10px;
@@ -1429,6 +1462,8 @@ def _render_base_page(
         }}
 
         .pay-action-btn {{
+            width: 100%;
+            min-width: 0;
             min-height: 48px;
             display: flex;
             align-items: center;
@@ -1618,7 +1653,7 @@ def _render_base_page(
             box-shadow: 0 12px 28px rgba(214, 179, 95, .18);
         }}
 
-        @media (max-width: 390px) {{
+        @media (max-width: 430px) {{
             .page {{
                 padding: 10px;
             }}
@@ -1712,7 +1747,17 @@ def _render_base_page(
     <main class="page">
         <div class="shell">
             <header class="header">
-                <img class="logo" src="/static/img/vidra-pay-logo.jpg" alt="Vidra-Pay">
+                <div class="logo" aria-label="Vidra-Pay">
+                    <div class="logo-fallback">VP</div>
+                    <img
+                        class="logo-img"
+                        src="/static/img/vidra-pay-logo.jpg"
+                        alt=""
+                        loading="eager"
+                        decoding="async"
+                        onerror="this.classList.add('is-hidden')"
+                    >
+                </div>
 
                 <div class="brand">
                     <div class="brand-title">Vidra-Pay</div>
