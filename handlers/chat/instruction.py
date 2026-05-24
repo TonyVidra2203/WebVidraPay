@@ -174,6 +174,131 @@ def _track_ff_ui_message(order_id: int, chat_id: Optional[int], message_id: Opti
 
     STATE.ff_ui_messages_by_order.setdefault(oid, set()).add((cid, mid))
 
+
+async def _ensure_order_ui_messages_table() -> None:
+    """
+    Локальная таблица для UI-сообщений заявок.
+
+    Зачем нужна:
+    - WEB-подтверждение оплаты рассылается всем админам;
+    - STATE хранит message_id только в памяти текущего процесса;
+    - после перезапуска/другого процесса часть карточек у админов может остаться неизвестной.
+    Поэтому дублируем chat_id/message_id в SQLite и при финализации удаляем карточки у всех админов.
+    """
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS p2p_order_ui_messages (
+            order_id   INTEGER NOT NULL,
+            chat_id    INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            kind       TEXT NOT NULL DEFAULT 'ff_ui',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (order_id, chat_id, message_id)
+        )
+        """
+    )
+    await db.commit()
+
+
+async def _remember_order_ui_message(
+    order_id: int,
+    chat_id: Optional[int],
+    message_id: Optional[int],
+    *,
+    kind: str = "ff_ui",
+) -> None:
+    """
+    Запоминает UI-сообщение заявки и в памяти, и в БД.
+
+    Если БД по какой-то причине недоступна, память всё равно работает,
+    поэтому старое поведение не ломается.
+    """
+    try:
+        oid = int(order_id)
+        cid = int(chat_id)
+        mid = int(message_id)
+    except Exception:
+        return
+
+    if oid <= 0 or cid == 0 or mid <= 0:
+        _track_ff_ui_message(oid, cid, mid)
+        return
+
+    _track_ff_ui_message(oid, cid, mid)
+
+    with suppress(Exception):
+        await _ensure_order_ui_messages_table()
+        db = await get_db()
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO p2p_order_ui_messages
+                (order_id, chat_id, message_id, kind)
+            VALUES (?, ?, ?, ?)
+            """,
+            (oid, cid, mid, str(kind or "ff_ui")),
+        )
+        await db.commit()
+
+
+async def _load_order_ui_messages(order_id: int) -> Set[Tuple[int, int]]:
+    """
+    Возвращает все сохранённые UI-сообщения по заявке из БД.
+    """
+    refs: Set[Tuple[int, int]] = set()
+    try:
+        oid = int(order_id)
+    except Exception:
+        return refs
+
+    if oid <= 0:
+        return refs
+
+    with suppress(Exception):
+        await _ensure_order_ui_messages_table()
+        db = await get_db()
+        cur = await db.execute(
+            """
+            SELECT chat_id, message_id
+              FROM p2p_order_ui_messages
+             WHERE order_id = ?
+            """,
+            (oid,),
+        )
+        rows = await cur.fetchall() or []
+        with suppress(Exception):
+            await cur.close()
+
+        for row in rows:
+            try:
+                refs.add((int(row[0]), int(row[1])))
+            except Exception:
+                continue
+
+    return refs
+
+
+async def _forget_order_ui_messages(order_id: int) -> None:
+    """
+    Удаляет из БД сохранённые ссылки на UI-сообщения заявки.
+    """
+    try:
+        oid = int(order_id)
+    except Exception:
+        return
+
+    if oid <= 0:
+        return
+
+    with suppress(Exception):
+        await _ensure_order_ui_messages_table()
+        db = await get_db()
+        await db.execute(
+            "DELETE FROM p2p_order_ui_messages WHERE order_id = ?",
+            (oid,),
+        )
+        await db.commit()
+
 async def _cleanup_receipt_ui(bot: Bot, user_id: int) -> None:
     ids = STATE.receipt_ui_messages.pop(user_id, set())
     for mid in ids:
@@ -289,13 +414,22 @@ async def _update_user_status_card(
 async def _finalize_exchange_ui(bot: Bot, order_id: int, operator_id: Optional[int]) -> None:
     order_id_int = int(order_id)
 
-    # 1) Удаляем все UI-сообщения по заявке, которые мы явно трекали:
-    #    подтверждение оплаты, карточки ошибок, карточки с кнопками,
-    #    исходные сообщения callback у админа, который нажимал кнопку.
-    tracked_refs = list(STATE.ff_ui_messages_by_order.pop(order_id_int, set()))
-    for chat_id, message_id in tracked_refs:
+    # 1) Собираем ВСЕ UI-сообщения по заявке:
+    #    - из памяти текущего процесса;
+    #    - из БД, куда сохраняются карточки, отправленные всем админам.
+    #
+    # Это чинит ситуацию, когда WEB-оплата разослана всем админам,
+    # один админ завершил/запустил обмен, а у остальных карточки не исчезли
+    # из-за потери локального STATE или обработки в другом процессе.
+    tracked_refs: Set[Tuple[int, int]] = set()
+    tracked_refs.update(STATE.ff_ui_messages_by_order.pop(order_id_int, set()))
+    tracked_refs.update(await _load_order_ui_messages(order_id_int))
+
+    for chat_id, message_id in list(tracked_refs):
         with suppress(Exception):
             await bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+
+    await _forget_order_ui_messages(order_id_int)
 
     # 2) Удаляем сообщения из старой карты pending_ff_ready_buttons
     ff_keys_to_delete: List[Tuple[int, int]] = []
@@ -856,7 +990,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
                 )
                 STATE.pending_ff_ready_buttons[(aid_int, int(db_order_id))] = (sent.chat.id, sent.message_id)
                 if order_id_int is not None:
-                    _track_ff_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
+                    await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
     else:
         if not operator_id:
             return
@@ -871,7 +1005,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         with suppress(Exception):
             STATE.pending_ff_ready_buttons[(int(operator_id), int(db_order_id))] = (sent.chat.id, sent.message_id)
         if order_id_int is not None:
-            _track_ff_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
+            await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
 
     if order_id_int is not None:
         with suppress(Exception):
@@ -1648,7 +1782,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
     if not operator or operator.get("role") not in ("Operator", "Admin"):
         with suppress(Exception):
             sent = await callback.bot.send_message(operator_id, "⚠️ Недостаточно прав для запуска обмена.")
-            _track_ff_ui_message(0, sent.chat.id, sent.message_id)
+            await _remember_order_ui_message(0, sent.chat.id, sent.message_id)
         return
 
     parts = (callback.data or "").split(":")
@@ -1663,13 +1797,13 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
     except Exception:
         with suppress(Exception):
             sent = await callback.bot.send_message(operator_id, "⚠️ Неверные данные кнопки ff_ready.")
-            _track_ff_ui_message(0, sent.chat.id, sent.message_id)
+            await _remember_order_ui_message(0, sent.chat.id, sent.message_id)
         return
 
     if order_id is None:
         with suppress(Exception):
             sent = await callback.bot.send_message(operator_id, "⚠️ Не удалось определить order_id для запуска обмена.")
-            _track_ff_ui_message(0, sent.chat.id, sent.message_id)
+            await _remember_order_ui_message(0, sent.chat.id, sent.message_id)
         return
 
     p2p: Optional[Dict[str, Any]] = None
@@ -1683,7 +1817,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
                 operator_id,
                 f"⚠️ Заявка #{order_id} не найдена.",
             )
-            _track_ff_ui_message(int(order_id), sent.chat.id, sent.message_id)
+            await _remember_order_ui_message(int(order_id), sent.chat.id, sent.message_id)
         return
 
     real_order_id = int(p2p.get("order_id") or 0)
@@ -1795,7 +1929,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
                     reply_markup=restore_kb,
                 )
                 STATE.pending_ff_ready_buttons[(aid_int, int(real_order_id))] = (sent.chat.id, sent.message_id)
-                _track_ff_ui_message(int(real_order_id), sent.chat.id, sent.message_id)
+                await _remember_order_ui_message(int(real_order_id), sent.chat.id, sent.message_id)
 
 
     is_guest_user = real_user_id <= 0
@@ -1850,7 +1984,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             await _broadcast_exchange_error(error_text)
             return
 
-        _track_ff_ui_message(int(real_order_id), callback.message.chat.id, callback.message.message_id)
+        await _remember_order_ui_message(int(real_order_id), callback.message.chat.id, callback.message.message_id)
         await _finalize_exchange_ui(
             bot=callback.bot,
             order_id=int(real_order_id),

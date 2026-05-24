@@ -103,7 +103,7 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 
     if role_norm == "mastercard":
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add(KeyboardButton("💳 Мои реквизиты"), KeyboardButton("✅ Заявки"))
+        kb.add(KeyboardButton("💳 Карты"), KeyboardButton("✅ Заявки"))
         kb.add(KeyboardButton("▶️ Начать сессию"), KeyboardButton("⏹ Завершить сессию"))
         await bot.send_message(message.chat.id, "Меню MasterCard:", reply_markup=kb)
         await send_welcome(bot, message.chat.id)

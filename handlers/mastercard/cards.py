@@ -223,7 +223,7 @@ async def mc_card_delete(callback: types.CallbackQuery) -> None:
 
 
 def register_mastercard_card_handlers(dp: Dispatcher) -> None:
-    dp.register_message_handler(mastercard_cards_menu, text="💳 Мои реквизиты", state="*")
+    dp.register_message_handler(mastercard_cards_menu, text="💳 Карты", state="*")
 
     dp.register_callback_query_handler(mc_card_add_start, lambda c: c.data == "mc_card_add", state="*")
     dp.register_callback_query_handler(mc_card_toggle, lambda c: c.data and c.data.startswith("mc_card_toggle:"), state="*")
