@@ -849,9 +849,15 @@ async def _notify_paid_to_admins(order: Dict[str, Any]) -> None:
 
 
 async def _cancel_web_order(order: Dict[str, Any]) -> None:
+    """
+    Тихо отменяет WEB-заявку из платёжной страницы VidraPay.
+
+    Важно: уведомление администраторам здесь не отправляем.
+    Пользователь может просто передумать или ошибочно открыть оплату,
+    поэтому отмена с сайта не должна засорять админские чаты.
+    """
     order_id = int(order.get("order_id") or 0)
     user_id = int(order.get("user_id") or 0)
-    operator_id = int(order.get("operator_id") or 0)
 
     db = await get_db()
     await db.execute(
@@ -865,12 +871,6 @@ async def _cancel_web_order(order: Dict[str, Any]) -> None:
         (order_id, user_id),
     )
     await db.commit()
-
-    msg = f"🚫 Пользователь WEB user_id {user_id} отменил оплату по заявке №<b>{order_id}</b>."
-    ids = await _admin_ids()
-    if operator_id and operator_id not in ids:
-        ids.insert(0, operator_id)
-    await _send_many_bot_messages(ids, msg)
 
 
 def _build_view_order(order: Dict[str, Any], token: str) -> Dict[str, Any]:
