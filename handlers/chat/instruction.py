@@ -775,7 +775,7 @@ async def instruction_callback_handler(callback: types.CallbackQuery, state: FSM
         return
 
     operator = await get_user(callback.from_user.id)
-    if not operator or operator.get("role") not in ("Operator", "Admin"):
+    if not operator or operator.get("role") not in ("Operator", "Admin", "MasterCard"):
         return
 
     with suppress(Exception):
@@ -954,6 +954,56 @@ async def process_comment(message: types.Message, state: FSMContext) -> None:
     await state.finish()
 
 
+
+async def _get_mastercard_owner_id_for_order(order: Optional[Dict[str, Any]]) -> Optional[int]:
+    """
+    Возвращает владельца карты Mastercard по card_id заявки.
+
+    Для WEB/VidraPay-заявок это позволяет отправлять подтверждение оплаты
+    не всем админам, а именно тому Mastercard, чья карта была выдана пользователю.
+    """
+    if not order:
+        return None
+
+    try:
+        card_id = int((order or {}).get("card_id") or 0)
+    except Exception:
+        card_id = 0
+
+    if card_id <= 0:
+        return None
+
+    try:
+        from db.cards import get_card_by_id
+
+        card = await get_card_by_id(card_id)
+    except Exception:
+        logger.exception("Failed to load Mastercard owner for card_id=%s", card_id)
+        return None
+
+    if not card:
+        return None
+
+    try:
+        owner_id = int(card.get("owner_id") or 0)
+    except Exception:
+        owner_id = 0
+
+    if owner_id <= 0:
+        return None
+
+    try:
+        owner = await get_user(owner_id)
+    except Exception:
+        owner = None
+
+    role = str((owner or {}).get("role") or "").strip().lower()
+    if role != "mastercard":
+        return None
+
+    return owner_id
+
+
 async def handle_paid(callback: types.CallbackQuery) -> None:
     await callback.answer()
     with suppress(Exception):
@@ -1108,31 +1158,35 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         return
 
     if is_web_order:
-        admin_ids = await _admin_ids()
-        sent_once: Set[int] = set()
+        mastercard_owner_id = await _get_mastercard_owner_id_for_order(p2p)
 
-        for aid in admin_ids:
-            try:
-                aid_int = int(aid)
-            except Exception:
-                continue
-
-            if aid_int in sent_once:
-                continue
-
-            sent_once.add(aid_int)
-
+        if not mastercard_owner_id:
+            logger.warning(
+                "VidraPay WEB order has no Mastercard owner: order_id=%s card_id=%s",
+                db_order_id,
+                (p2p or {}).get("card_id"),
+            )
             with suppress(Exception):
-                sent = await callback.bot.send_message(
-                    aid_int,
-                    admin_text,
-                    parse_mode="HTML",
-                    reply_markup=ikb,
-                    disable_web_page_preview=True,
+                await callback.bot.send_message(
+                    callback_user_id,
+                    "⚠️ Не удалось определить Mastercard для этой оплаты. Напишите в поддержку.",
                 )
-                STATE.pending_ff_ready_buttons[(aid_int, int(db_order_id))] = (sent.chat.id, sent.message_id)
-                if order_id_int is not None:
-                    await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
+            return
+
+        with suppress(Exception):
+            sent = await callback.bot.send_message(
+                int(mastercard_owner_id),
+                admin_text,
+                parse_mode="HTML",
+                reply_markup=ikb,
+                disable_web_page_preview=True,
+            )
+            STATE.pending_ff_ready_buttons[(int(mastercard_owner_id), int(db_order_id))] = (
+                sent.chat.id,
+                sent.message_id,
+            )
+            if order_id_int is not None:
+                await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
     else:
         if not operator_id:
             return
@@ -1921,7 +1975,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
 
     operator_id = int(callback.from_user.id)
     operator = await get_user(operator_id)
-    if not operator or operator.get("role") not in ("Operator", "Admin"):
+    if not operator or operator.get("role") not in ("Operator", "Admin", "MasterCard"):
         with suppress(Exception):
             sent = await callback.bot.send_message(operator_id, "⚠️ Недостаточно прав для запуска обмена.")
             await _remember_order_ui_message(0, sent.chat.id, sent.message_id)
@@ -2166,7 +2220,7 @@ async def handle_finish_order(callback: types.CallbackQuery) -> None:
 
     operator_id = int(callback.from_user.id)
     operator = await get_user(operator_id)
-    if not operator or operator.get("role") not in ("Operator", "Admin"):
+    if not operator or operator.get("role") not in ("Operator", "Admin", "MasterCard"):
         with suppress(Exception):
             await callback.bot.send_message(operator_id, "⚠️ Недостаточно прав для завершения заявки.")
         return

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import logging
 import random
+import time
 import re
 from contextlib import suppress
 from typing import Any, Dict, List, Optional, Set
@@ -13,7 +14,7 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import settings
-from db.cards import get_active_cards
+from db.cards import get_active_cards, get_active_cards_for_amount
 from db.connection import get_db
 from services.nirvana import NirvanaAPIError
 from services.nirvana_payin import create_nirvana_ns_pk_qr_order
@@ -215,13 +216,44 @@ async def _set_payment_card(order_id: int, method: str, card: Dict[str, Any], re
     await db.commit()
 
 
-async def _get_cards_for_method(method_key: str, order_id: int = 0) -> List[Dict[str, Any]]:
+async def _get_cards_for_method(
+    method_key: str,
+    order_id: int = 0,
+    amount_rub: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Возвращает активные карты для выбранного способа оплаты.
+
+    Новая логика MasterCard:
+    - берём карты из общей таблицы cards;
+    - используем только карты, у которых есть владелец owner_id;
+    - учитываем min_amount_rub / max_amount_rub по сумме заявки;
+    - оставляем по одной карте на банк для экрана выбора банка.
+    """
     method = VIDRAPAY_METHODS.get(method_key) or {}
     card_field = str(method.get("card_field") or "").strip()
     if not card_field:
         return []
 
-    cards = await get_active_cards()
+    try:
+        if amount_rub is None:
+            cards = await get_active_cards()
+        else:
+            cards = await get_active_cards_for_amount(float(amount_rub))
+    except Exception:
+        logger.exception(
+            "Failed to load active Mastercard cards method=%s order_id=%s amount=%s",
+            method_key,
+            order_id,
+            amount_rub,
+        )
+        return []
+
+    cards = [
+        card for card in cards
+        if int(card.get("owner_id") or 0) > 0
+    ]
+
     cards = await _filter_cards_by_vidrapay_distribution(cards, order_id=order_id)
 
     result: List[Dict[str, Any]] = []
@@ -231,20 +263,49 @@ async def _get_cards_for_method(method_key: str, order_id: int = 0) -> List[Dict
         requisites = str(card.get(card_field) or "").strip()
         bank_name = str(card.get("bank_name") or "").strip()
         bank_key = bank_name.casefold()
+
         if not requisites or not bank_name or bank_key in seen_banks:
             continue
+
         seen_banks.add(bank_key)
         result.append(card)
 
     return result
 
-async def _get_all_cards_for_method(method_key: str, order_id: int = 0) -> List[Dict[str, Any]]:
+async def _get_all_cards_for_method(
+    method_key: str,
+    order_id: int = 0,
+    amount_rub: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Возвращает все активные Mastercard-карты для выбранного способа оплаты.
+
+    Используется для варианта «Любой банк», поэтому здесь не убираем дубли банков.
+    """
     method = VIDRAPAY_METHODS.get(method_key) or {}
     card_field = str(method.get("card_field") or "").strip()
     if not card_field:
         return []
 
-    cards = await get_active_cards()
+    try:
+        if amount_rub is None:
+            cards = await get_active_cards()
+        else:
+            cards = await get_active_cards_for_amount(float(amount_rub))
+    except Exception:
+        logger.exception(
+            "Failed to load all active Mastercard cards method=%s order_id=%s amount=%s",
+            method_key,
+            order_id,
+            amount_rub,
+        )
+        return []
+
+    cards = [
+        card for card in cards
+        if int(card.get("owner_id") or 0) > 0
+    ]
+
     cards = await _filter_cards_by_vidrapay_distribution(cards, order_id=order_id)
 
     result: List[Dict[str, Any]] = []
@@ -253,14 +314,15 @@ async def _get_all_cards_for_method(method_key: str, order_id: int = 0) -> List[
         bank_name = str(card.get("bank_name") or "").strip()
         if requisites and bank_name:
             result.append(card)
-    return result
 
+    return result
 
 async def _get_user_last_success_card(
     *,
     user_id: int,
     method_key: str,
     order_id: int = 0,
+    amount_rub: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Возвращает последние рабочие реквизиты пользователя для метода «Проверенный банк».
@@ -325,7 +387,16 @@ async def _get_user_last_success_card(
         return None
 
     try:
-        cards = await get_active_cards()
+        if amount_rub is None:
+            cards = await get_active_cards()
+        else:
+            cards = await get_active_cards_for_amount(float(amount_rub))
+
+        cards = [
+            card for card in cards
+            if int(card.get("owner_id") or 0) > 0
+        ]
+
         cards = await _filter_cards_by_vidrapay_distribution(
             cards,
             order_id=order_id,
@@ -506,66 +577,171 @@ async def _filter_cards_by_vidrapay_distribution(
     order_id: int = 0,
 ) -> List[Dict[str, Any]]:
     """
-    Фильтр выдачи VidraPay-реквизитов.
+    Фильтр выдачи VidraPay-реквизитов по ограничениям самой карты MasterCard.
 
-    Засчитываются только записи из vidrapay_card_distribution_usage, которые
-    теперь создаются после успешного обмена, а не после простого показа карты.
+    Старые глобальные ограничения VidraPay здесь больше не используются.
+    Теперь каждая карта сама задаёт свои правила:
 
-    Правила:
-    - после успешного перевода карта скрыта на 15 минут;
-    - если за последние 20 часов по карте было 3 успешных перевода, карта скрыта
-      до выхода из этого окна.
+    - min_amount_rub / max_amount_rub уже отфильтрованы выше через get_active_cards_for_amount();
+    - daily_limit_rub: дневной лимит в рублях по успешным completed-заявкам;
+    - daily_transfer_limit: количество успешных переводов за текущий день;
+    - transfer_pause_minutes: пауза после последнего успешного completed-перевода.
+
+    Если карта не проходит хотя бы одно правило — она не попадает на страницу оплаты.
     """
     if not cards:
         return []
 
-    if not await _is_vidrapay_distribution_enabled():
-        return cards
+    valid_cards: List[Dict[str, Any]] = []
+    card_ids: List[int] = []
+
+    for card in cards:
+        try:
+            card_id = int(card.get("card_id") or 0)
+        except Exception:
+            card_id = 0
+
+        if card_id > 0:
+            valid_cards.append(card)
+            card_ids.append(card_id)
+
+    if not valid_cards:
+        return []
 
     db = await get_db()
-    cur = await db.execute(
-        """
-        SELECT
-            card_id,
-            MAX(CASE
-                    WHEN datetime(created_at) >= datetime('now', '-15 minutes')
-                    THEN 1 ELSE 0
-                END) AS has_recent_success,
-            SUM(CASE
-                    WHEN datetime(created_at) >= datetime('now', '-20 hours')
-                    THEN 1 ELSE 0
-                END) AS success_count_20h
-          FROM vidrapay_card_distribution_usage
-         WHERE order_id != ?
-         GROUP BY card_id
-        """,
-        (int(order_id or 0),),
-    )
-    rows = await cur.fetchall() or []
-    await cur.close()
 
-    blocked_card_ids: Set[int] = set()
-    for row in rows:
-        if not row or row[0] is None:
-            continue
+    order_amount_rub = 0.0
+    if int(order_id or 0) > 0:
+        with suppress(Exception):
+            cur_order = await db.execute(
+                """
+                SELECT COALESCE(total_rub, rub_amount, 0)
+                  FROM p2p_orders
+                 WHERE order_id = ?
+                 LIMIT 1
+                """,
+                (int(order_id),),
+            )
+            row_order = await cur_order.fetchone()
+            await cur_order.close()
+            if row_order:
+                order_amount_rub = float(row_order[0] or 0.0)
+
+    placeholders = ", ".join("?" for _ in card_ids)
+
+    stats_by_card: Dict[int, Dict[str, Any]] = {}
+    try:
+        cur = await db.execute(
+            f"""
+            SELECT
+                card_id,
+                COALESCE(SUM(
+                    CASE
+                        WHEN datetime(COALESCE(completed_at, created_at)) >= datetime('now', 'start of day')
+                        THEN COALESCE(total_rub, 0)
+                        ELSE 0
+                    END
+                ), 0) AS today_sum_rub,
+                COALESCE(SUM(
+                    CASE
+                        WHEN datetime(COALESCE(completed_at, created_at)) >= datetime('now', 'start of day')
+                        THEN 1
+                        ELSE 0
+                    END
+                ), 0) AS today_count,
+                MAX(strftime('%s', COALESCE(completed_at, created_at))) AS last_success_ts
+              FROM p2p_orders
+             WHERE status = 'completed'
+               AND card_id IN ({placeholders})
+               AND order_id != ?
+             GROUP BY card_id
+            """,
+            tuple(card_ids + [int(order_id or 0)]),
+        )
+        rows = await cur.fetchall() or []
+        await cur.close()
+
+        for row in rows:
+            if not row or row[0] is None:
+                continue
+
+            try:
+                card_id = int(row[0])
+            except Exception:
+                continue
+
+            last_ts = 0
+            with suppress(Exception):
+                last_ts = int(row[3] or 0)
+
+            stats_by_card[card_id] = {
+                "today_sum_rub": float(row[1] or 0.0),
+                "today_count": int(row[2] or 0),
+                "last_success_ts": last_ts,
+            }
+
+    except Exception:
+        logger.exception(
+            "Failed to load Mastercard card limits stats for VidraPay order_id=%s",
+            order_id,
+        )
+        return []
+
+    now_ts = int(time.time())
+    result: List[Dict[str, Any]] = []
+
+    for card in valid_cards:
         try:
-            card_id = int(row[0])
-            has_recent_success = int(row[1] or 0) > 0
-            success_count_20h = int(row[2] or 0)
+            card_id = int(card.get("card_id") or 0)
         except Exception:
             continue
 
-        if card_id > 0 and (has_recent_success or success_count_20h >= 3):
-            blocked_card_ids.add(card_id)
+        stats = stats_by_card.get(
+            card_id,
+            {
+                "today_sum_rub": 0.0,
+                "today_count": 0,
+                "last_success_ts": 0,
+            },
+        )
 
-    result: List[Dict[str, Any]] = []
-    for card in cards:
-        card_id = int(card.get("card_id") or 0)
-        if card_id <= 0 or card_id not in blocked_card_ids:
-            result.append(card)
+        # 1) Дневной лимит в рублях: учитываем уже успешные заявки за сегодня
+        #    + текущую сумму, которую пользователь хочет оплатить.
+        try:
+            daily_limit_rub = float(card.get("daily_limit_rub") or 0)
+        except Exception:
+            daily_limit_rub = 0.0
+
+        if daily_limit_rub > 0:
+            today_sum = float(stats.get("today_sum_rub") or 0.0)
+            if today_sum + order_amount_rub > daily_limit_rub:
+                continue
+
+        # 2) Количество успешных переводов в день.
+        try:
+            daily_transfer_limit = int(card.get("daily_transfer_limit") or 0)
+        except Exception:
+            daily_transfer_limit = 0
+
+        if daily_transfer_limit > 0:
+            today_count = int(stats.get("today_count") or 0)
+            if today_count >= daily_transfer_limit:
+                continue
+
+        # 3) Пауза после последнего успешного перевода.
+        try:
+            pause_minutes = int(card.get("transfer_pause_minutes") or 0)
+        except Exception:
+            pause_minutes = 0
+
+        if pause_minutes > 0:
+            last_success_ts = int(stats.get("last_success_ts") or 0)
+            if last_success_ts > 0 and (now_ts - last_success_ts) < pause_minutes * 60:
+                continue
+
+        result.append(card)
 
     return result
-
 
 async def _claim_vidrapay_distribution_card(
     *,
@@ -2748,6 +2924,7 @@ async def vidrapay_pay_page(request: web.Request) -> web.Response:
             user_id=user_id,
             method_key="card",
             order_id=order_id,
+            amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
         )
         if familiar_card:
             order["_familiar_card"] = familiar_card
@@ -2801,6 +2978,7 @@ async def vidrapay_select_method(request: web.Request) -> web.Response:
                     user_id=user_id,
                     method_key="card",
                     order_id=order_id,
+                    amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
                 )
                 if familiar_card:
                     order["_familiar_card"] = familiar_card
@@ -2816,6 +2994,7 @@ async def vidrapay_select_method(request: web.Request) -> web.Response:
             user_id=user_id,
             method_key="card",
             order_id=order_id,
+            amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
         )
         if not selected_card:
             return _no_cache_response(
@@ -2909,7 +3088,11 @@ async def vidrapay_select_method(request: web.Request) -> web.Response:
         logger.exception("Failed to set VidraPay payment method for order_id=%s", order_id)
 
     try:
-        cards = await _get_cards_for_method(method_key, order_id=order_id)
+        cards = await _get_cards_for_method(
+            method_key,
+            order_id=order_id,
+            amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
+        )
     except Exception:
         logger.exception("Failed to load cards for VidraPay method=%s order_id=%s", method_key, order_id)
         cards = []
@@ -2966,8 +3149,16 @@ async def vidrapay_select_card(request: web.Request) -> web.Response:
         if saved_method_key in VIDRAPAY_METHODS:
             return _no_cache_response(_render_payment_details_page(order, token, saved_method_key))
 
-    cards = await _get_cards_for_method(method_key, order_id=order_id)
-    all_cards = await _get_all_cards_for_method(method_key, order_id=order_id)
+    cards = await _get_cards_for_method(
+        method_key,
+        order_id=order_id,
+        amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
+    )
+    all_cards = await _get_all_cards_for_method(
+        method_key,
+        order_id=order_id,
+        amount_rub=float(order.get("total_rub") or order.get("rub_amount") or 0),
+    )
 
     if str(request.query.get("confirm") or "").strip() != "1":
         return _no_cache_response(
