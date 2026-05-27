@@ -1,18 +1,44 @@
 # -----------------------------------------------------------------------------
 # Раздел: Импорты
 # -----------------------------------------------------------------------------
+import os
+
 from aiogram import types, Dispatcher
 from aiogram.dispatcher import FSMContext
-from aiogram.types import (
-    ReplyKeyboardRemove,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from aiogram.types import ReplyKeyboardRemove
 
 from db.users import add_or_update_user, get_user, set_referral_link, count_users, get_admin_user_ids
 from handlers.admin import admin_start
 from handlers.common import send_welcome
 from keyboards.inline import shop_reply_keyboard
+
+
+# -----------------------------------------------------------------------------
+# Раздел: Вспомогательные функции
+# -----------------------------------------------------------------------------
+def _build_mastercard_web_url(user_id: int) -> str:
+    """
+    Собирает ссылку для кнопки MasterCard.
+
+    Когда будет готов mastercard_webhook.py, ссылка должна вести на:
+    https://твой-домен/mastercard?user_id=ID
+
+    Для этого в .env можно будет указать один из вариантов:
+    MASTERCARD_WEB_BASE_URL=https://твой-домен
+    WEBAPP_BASE_URL=https://твой-домен
+    BASE_URL=https://твой-домен
+    """
+    base_url = (
+        os.getenv("MASTERCARD_WEB_BASE_URL")
+        or os.getenv("WEBAPP_BASE_URL")
+        or os.getenv("BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+
+    if not base_url:
+        return "https://webvidra.com"
+
+    return f"{base_url}/mastercard?user_id={user_id}"
 
 
 # -----------------------------------------------------------------------------
@@ -50,7 +76,6 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             uname = f"@{username}" if username else "—"
             ref_text = str(referrer_id) if referrer_id is not None else "—"
 
-            # Кликабельное упоминание (в Telegram) через tg://user?id=
             mention = f"<a href=\"tg://user?id={user_id}\">{full_name or 'Пользователь'}</a>"
 
             text = (
@@ -63,7 +88,6 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             )
 
             for admin_id in admin_ids:
-                # не шлём самому себе, если админ регается
                 if admin_id == user_id:
                     continue
                 try:
@@ -74,11 +98,9 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
                         disable_web_page_preview=True,
                     )
                 except Exception:
-                    # админ мог заблокировать бота / недоступен — не ломаем /start
                     pass
 
         except Exception:
-            # на любые сбои уведомления не должны влиять на регистрацию
             pass
     # --- конец уведомления ---
 
@@ -102,11 +124,18 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
         return
 
     if role_norm == "mastercard":
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add(KeyboardButton("💳 Карты"), KeyboardButton("✅ Заявки"))
-        kb.add(KeyboardButton("▶️ Начать сессию"), KeyboardButton("⏹ Завершить сессию"))
-        await bot.send_message(message.chat.id, "Меню MasterCard:", reply_markup=kb)
-        await send_welcome(bot, message.chat.id)
+        mastercard_url = _build_mastercard_web_url(user_id)
+
+        await bot.send_message(
+            message.chat.id,
+            "Главное меню:",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await send_welcome(
+            bot,
+            message.chat.id,
+            mastercard_url=mastercard_url,
+        )
         return
 
     if role_norm == "shop":

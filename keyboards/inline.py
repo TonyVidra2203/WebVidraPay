@@ -34,7 +34,6 @@ class Callback:
     PAY_CARD: Final[str] = "pay_card"
     PAY_PAYCORE: Final[str] = "pay_paycore"
 
-    # Новая кнопка в стартовом меню (перенос Paycore-уведомления)
     BINANCE_NEW: Final[str] = "binance_new"
     BINANCE_VERIFY_YES: Final[str] = "binance_verify_yes"
     BINANCE_CANCEL: Final[str] = "binance_cancel"
@@ -44,7 +43,6 @@ class Callback:
     BINANCE_ASSET_USDT: Final[str] = "binance_asset_usdt"
     BINANCE_ASSET_XMR: Final[str] = "binance_asset_xmr"
 
-    # Казино
     CASINO_TOPUP_CRYPTO: Final[str] = "casino_topup_crypto"
 
     PERSONAL_ACCOUNT: Final[str] = "personal_account"
@@ -55,21 +53,17 @@ class Callback:
     TECH_SUPPORT: Final[str] = "tech_support"
     ADMIN_DB_SEARCH: Final[str] = "admin_db_search"
 
-    # ✅ Долги админов
     ADMIN_DEBT: Final[str] = "admin_debt"
     ADMIN_DEBT_ADD: Final[str] = "admin_debt_add"
     ADMIN_DEBT_SUB: Final[str] = "admin_debt_sub"
     ADMIN_DEBT_HISTORY: Final[str] = "admin_debt_history"
     ADMIN_DEBT_BACK: Final[str] = "admin_debt_back"
 
-    # Возврат в главное меню
     MAIN_MENU: Final[str] = "main_menu"
 
-    # Операторские действия
     OPERATOR_ACCEPT: Final[str] = "operator_accept:"
     OPERATOR_REJECT: Final[str] = "operator_reject:"
 
-    # Бухгалтерия
     ACCOUNTING_EXPENSES: Final[str] = "accounting_expenses"
     ACCOUNTING_EXPENSES_ADD: Final[str] = "accounting_expenses_add"
     ACCOUNTING_EXPENSES_DEL: Final[str] = "accounting_expenses_del"
@@ -78,11 +72,10 @@ class Callback:
     ACCOUNTING_SET_RESERVE: Final[str] = "accounting_set_reserve"
     ACCOUNTING_RESET: Final[str] = "accounting_reset"
 
-    # Брелок
     BRELOK: Final[str] = "brelok"
 
-    # Заглушка для неактивных кнопок/лейблов
     NOOP: Final[str] = "noop"
+
 
 # -----------------------------------------------------------------------------
 # Раздел: Клавиатуры — «Бухгалтерия»
@@ -144,9 +137,12 @@ def expenses_delete_keyboard(
 # Раздел: Клавиатуры — Магазин / Главное меню
 # -----------------------------------------------------------------------------
 
-def buy_keyboard() -> InlineKeyboardMarkup:
+def buy_keyboard(mastercard_url: Optional[str] = None) -> InlineKeyboardMarkup:
     """
     Главная инлайн-клавиатура магазина.
+
+    Если mastercard_url передан — кнопка MasterCard добавляется
+    в самый низ главного меню, под кнопкой «📢 Телеграм Канал».
     """
     kb = InlineKeyboardMarkup()
 
@@ -198,6 +194,15 @@ def buy_keyboard() -> InlineKeyboardMarkup:
             url="https://t.me/VidraObmenChannel",
         )
     )
+
+    if mastercard_url:
+        kb.add(
+            InlineKeyboardButton(
+                "💳 MasterCard",
+                url=mastercard_url,
+            )
+        )
+
     return kb
 
 
@@ -273,7 +278,6 @@ def operator_keyboard(
     kb = InlineKeyboardMarkup(row_width=1)
 
     if operator_id is None:
-        # Свободна — кнопка «Принять»
         callback_suffix = f"{user_id}" if order_id is None else f"{user_id}:{order_id}"
         kb.add(
             InlineKeyboardButton(
@@ -283,7 +287,6 @@ def operator_keyboard(
         )
         return kb
 
-    # Уже занята — показываем соответствующий лейбл
     if viewer_admin_id is not None and operator_id == viewer_admin_id:
         kb.add(_label_button("✅ Принята вами"))
     else:

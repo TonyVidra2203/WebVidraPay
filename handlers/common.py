@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import math
 from aiogram import Bot, types
@@ -27,10 +27,23 @@ active_mc_sessions: Dict[int, datetime] = {}
 # -----------------------------------------------------------------------------
 # Раздел: Асинхронные функции — приветствие и меню
 # -----------------------------------------------------------------------------
-async def send_welcome(bot: Bot, chat_id: int) -> None:
-    """Отправить приветственное изображение с кнопками."""
+async def send_welcome(
+    bot: Bot,
+    chat_id: int,
+    mastercard_url: Optional[str] = None,
+) -> None:
+    """
+    Отправить приветственное изображение с главным inline-меню.
+
+    mastercard_url передаётся только для пользователей с ролью MasterCard.
+    Если его нет — кнопка MasterCard в меню не появится.
+    """
     with open("assets/menu.jpg", "rb") as photo:
-        await bot.send_photo(chat_id=chat_id, photo=photo, reply_markup=buy_keyboard())
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            reply_markup=buy_keyboard(mastercard_url=mastercard_url),
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -68,10 +81,10 @@ async def mc_end_session(message: types.Message) -> None:
             comp_dt = comp_at
 
         if comp_dt.tzinfo is None:
-            comp_dt = comp_dt.replace(tzinfo=UTC)
+            comp_dt = comp_dt.replace(tzinfo=timezone.utc)
 
         if start <= comp_dt <= end:
-            base_margin = (order.get("total_rub", 0) - order.get("rub_amount", 0))
+            base_margin = order.get("total_rub", 0) - order.get("rub_amount", 0)
             total_profit += math.ceil(base_margin * 0.35)
 
     await message.answer(f"⏹ Сессия завершена.\nПрибыль: {total_profit} ₽")
