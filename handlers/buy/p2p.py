@@ -27,7 +27,7 @@ from aiogram.utils.exceptions import (
 
 from config.settings import settings
 from db.connection import get_db
-from db.p2p import get_pending_order, save_p2p_order
+from db.p2p import get_pending_order, save_p2p_order, save_operator_notification
 from db.users import (
     get_all_users,
     get_user_btc_wallet,
@@ -512,12 +512,20 @@ async def _finalize_order(
 
         ops: List[int] = []
         all_users = await get_all_users()
+
         for u in all_users:
-            role = u.get("role")
+            role = str(u.get("role") or "").strip().lower()
             tid = u.get("telegram_id")
-            if isinstance(tid, int) and (
-                role in ("Operator", "Admin") or (role == "MasterCard" and tid in active_mc_sessions)
-            ):
+
+            try:
+                tid = int(tid)
+            except Exception:
+                continue
+
+            if tid <= 0:
+                continue
+
+            if role == "mastercard":
                 ops.append(tid)
 
         pending_operator_messages[user_id] = []
@@ -539,6 +547,17 @@ async def _finalize_order(
                     reply_markup=operator_keyboard(user_id, int(order_id)),
                 )
                 pending_operator_messages[user_id].append((sent.chat.id, sent.message_id))
+
+                try:
+                    await save_operator_notification(
+                        order_id=int(order_id),
+                        user_id=int(user_id),
+                        operator_id=int(op),
+                        chat_id=int(sent.chat.id),
+                        message_id=int(sent.message_id),
+                    )
+                except Exception:
+                    logger.exception("Не удалось сохранить уведомление Mastercard по заявке #%s", order_id)
             except (ChatNotFound, BotBlocked, CantInitiateConversation, Unauthorized) as e:
                 logger.warning("Пропущен оператор %s: %s", op, e)
             except Exception:
@@ -585,12 +604,20 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
     from handlers.common import active_mc_sessions
     ops: List[int] = []
     all_users = await get_all_users()
+
     for u in all_users:
-        role = u.get("role")
+        role = str(u.get("role") or "").strip().lower()
         tid = u.get("telegram_id")
-        if isinstance(tid, int) and (
-            role in ("Operator", "Admin") or (role == "MasterCard" and tid in active_mc_sessions)
-        ):
+
+        try:
+            tid = int(tid)
+        except Exception:
+            continue
+
+        if tid <= 0:
+            continue
+
+        if role == "mastercard":
             ops.append(tid)
 
     for op in ops:

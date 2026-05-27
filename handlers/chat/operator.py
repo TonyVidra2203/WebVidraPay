@@ -12,7 +12,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ContentType, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.exceptions import MessageNotModified
 
-from db.cards import get_all_cards, get_card_balance
+from services.mastercard_cards import (
+    format_mastercard_card_button_title,
+    get_available_mastercard_cards_for_amount,
+    get_mastercard_card_for_issue,
+)
 from db.connection import get_db
 from db.p2p import assign_operator_to_order, delete_order, get_order_by_id, get_pending_order
 from handlers.chat.instruction import INSTRUCTION_TEXT_TEMPLATE, INSTRUCTION_TEXT_TEMPLATE_USER
@@ -731,23 +735,19 @@ async def close_sms_chat(callback: types.CallbackQuery) -> None:
 # -----------------------------------------------------------------------------
 async def operator_accept(callback: types.CallbackQuery) -> None:
     """
-    Принятие заявки оператором.
+    Принятие заявки оператором / Mastercard.
 
-    Для Telegram-пользователя:
-    - закрепляет оператора,
-    - обновляет уведомление пользователю,
-    - показывает оператору стандартную карточку.
-
-    Для WEB-заявки:
-    - не пытается писать гостю в Telegram,
-    - обновляет карточки у остальных операторов не только из памяти,
-      но и из БД, чтобы это работало даже если web и bot запущены
-      разными процессами.
+    После принятия заявки реквизиты НЕ выдаются автоматически.
+    Mastercard должен нажать «💳 Карты», выбрать карту из сайта,
+    и только после этого реквизиты будут выданы пользователю.
     """
     await callback.answer()
+
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except MessageNotModified:
+        pass
+    except Exception:
         pass
 
     op_id = callback.from_user.id
@@ -777,11 +777,16 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
         await callback.message.answer("⚠️ Заявка не найдена.")
         return
 
+    operator = await get_user(op_id)
+    role = str((operator or {}).get("role") or "").strip()
+    if role not in ("Operator", "Admin", "MasterCard", "mastercard"):
+        await callback.answer("🚫 Доступ запрещён", show_alert=True)
+        return
+
     order_db_id = int(rec.get("order_id"))
-    user_id = int(rec.get("user_id", user_id))  # type: ignore[arg-type]
+    user_id = int(rec.get("user_id", user_id))
     is_guest = _is_guest_order(rec, user_id)
 
-    # Важно: назначаем оператора сразу
     await assign_operator_to_order(order_db_id, op_id)
 
     taker_name = "оператор"
@@ -795,10 +800,6 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
     except Exception:
         pass
 
-    # ------------------------------------------------------------
-    # 1) Обновляем карточки у остальных операторов из старого
-    #    in-memory хранилища (как раньше)
-    # ------------------------------------------------------------
     mem_entries = list(pending_operator_messages.get(user_id, []))
     seen_pairs = set()
 
@@ -825,15 +826,10 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
         except Exception:
             pass
 
-    # ------------------------------------------------------------
-    # 2) Дополнительно обновляем карточки из БД.
-    #    Это критично для WEB-заявок, когда web и bot работают
-    #    в разных процессах и память не общая.
-    # ------------------------------------------------------------
     try:
         from db.p2p import get_operator_notifications_by_order
     except Exception:
-        get_operator_notifications_by_order = None  # type: ignore[assignment]
+        get_operator_notifications_by_order = None
 
     if get_operator_notifications_by_order is not None:
         try:
@@ -865,10 +861,6 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
             except Exception:
                 pass
 
-    # ------------------------------------------------------------
-    # 3) Обновляем уведомление пользователю только для обычной
-    #    TG-заявки. Для WEB/WEB-GUEST этого делать не нужно.
-    # ------------------------------------------------------------
     if not is_guest and user_id in pending_buy_messages:
         chat_id, msg_id = pending_buy_messages[user_id]
         try:
@@ -885,56 +877,6 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
                 "Не удалось обновить пользовательское уведомление по заявке #%s",
                 order_db_id,
             )
-
-    operator = await get_user(op_id)
-    if operator and operator.get("role") == "MasterCard":
-        card = await get_user_card(op_id)
-        sbp = await get_user_sbp(op_id)
-        bank = await get_user_bank(op_id)
-        comment = await get_user_comment(op_id)
-
-        if not (card and sbp and bank and comment):
-            await callback.bot.send_message(
-                op_id, '⚠️ Укажите все реквизиты и комментарий в разделе "💳 Карта".'
-            )
-            return
-
-        payment = math.ceil(float(rec["total_rub"]))
-
-        if not is_guest:
-            text_user = (
-                "📝 *Реквизиты для оплаты:*\n"
-                "➖➖➖➖➖➖➖➖➖➖\n"
-                f"▶ Карта:    {card}\n"
-                f"▶ Банк:     {bank}\n"
-                f"▶ Коммент.:  {comment}\n\n"
-                f"▶ Сумма:    {payment} ₽\n"
-                "➖➖➖➖➖➖➖➖➖➖\n\n"
-                "‼️ Точно сверяйте номер, банк и переводите СТРОГО ту СУММУ, которая "
-                "УКАЗАНА в инструкции. Ошибка — деньги потеряны!"
-            )
-            kb_user = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("✅ Оплатил", callback_data="paid"),
-                InlineKeyboardButton("🚫 Отменить", callback_data=f"user_cancel_order:{order_db_id}"),
-            )
-
-            await callback.bot.send_message(
-                user_id, text_user, parse_mode="Markdown", reply_markup=kb_user
-            )
-        else:
-            await callback.bot.send_message(
-                op_id,
-                "ℹ️ Это WEB-гость. Реквизиты в Telegram пользователю не отправляются — "
-                "ориентируйтесь на web-страницу заявки.",
-            )
-
-        text_mc = INSTRUCTION_TEXT_TEMPLATE.format(
-            card=card, bank=bank, comment=comment, amount=payment
-        )
-        await callback.bot.send_message(
-            op_id, text_mc, parse_mode="Markdown", reply_markup=DEFAULT_OP_KB
-        )
-        return
 
     btc_amt = float(rec.get("btc_amount", 0))
 
@@ -985,6 +927,15 @@ async def operator_accept(callback: types.CallbackQuery) -> None:
         operator_order_msgs[(op_id, order_db_id)] = callback.message.message_id
     except MessageNotModified:
         pass
+    except Exception:
+        new_msg = await bot_send(
+            callback.bot,
+            op_id,
+            text_op,
+            parse_mode="HTML",
+            reply_markup=kb_op,
+        )
+        operator_order_msgs[(op_id, order_db_id)] = new_msg.message_id
 
 
 async def user_cancel_order(callback: types.CallbackQuery) -> None:
@@ -1298,8 +1249,9 @@ async def operator_reject(callback: types.CallbackQuery) -> None:
 # Раздел: Хендлеры — работа с картами
 # -----------------------------------------------------------------------------
 async def operator_cards(callback: types.CallbackQuery) -> None:
-    """Выбор карты оператором для передачи реквизитов."""
+    """Выбор Mastercard-карты для передачи реквизитов пользователю."""
     await callback.answer()
+
     parts = (callback.data or "").split(":")
     user_id: Optional[int] = None
     order_id: Optional[int] = None
@@ -1314,34 +1266,65 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
         await callback.bot.send_message(callback.from_user.id, "⚠️ Неверные данные.")
         return
 
-    cards = await get_all_cards()
-    active_cards = [c for c in cards if c.get("is_active", True)]
+    rec: Optional[Dict[str, Any]] = None
+    if order_id is not None:
+        try:
+            rec = await get_order_by_id(order_id)
+        except Exception:
+            rec = None
 
-    if not active_cards:
-        await callback.bot.send_message(callback.from_user.id, "⚠️ Нет активных карт.")
+    if rec is None and user_id is not None:
+        rec = await get_pending_order(user_id)
+
+    if not rec:
+        await callback.bot.send_message(callback.from_user.id, "⚠️ Заявка не найдена.")
+        return
+
+    try:
+        amount_rub = math.ceil(float(rec.get("total_rub") or rec.get("rub_amount") or 0))
+    except Exception:
+        amount_rub = 0
+
+    cards = await get_available_mastercard_cards_for_amount(float(amount_rub))
+
+    if not cards:
+        await callback.bot.send_message(
+            callback.from_user.id,
+            "⚠️ Нет доступных Mastercard-карт под эту сумму.\n\n"
+            "Возможные причины: карты выключены, достигнут лимит, не подходит min/max или действует пауза.",
+        )
         return
 
     kb = InlineKeyboardMarkup(row_width=1)
-    for c in active_cards:
-        bal = await get_card_balance(c["card_id"])
-        title = f"{c['card_id']}: {c['bank_name']} — {bal:.0f}₽"
+    for card in cards:
+        card_id = int(card.get("card_id") or 0)
+        if card_id <= 0:
+            continue
+
         payload = (
-            f"operator_card_selected:{user_id}:{order_id}:{c['card_id']}"
-            if order_id is not None
-            else f"operator_card_selected:{user_id}:{c['card_id']}"
+            f"operator_card_selected:{user_id}:{int(rec['order_id'])}:{card_id}"
+            if rec.get("order_id") is not None
+            else f"operator_card_selected:{user_id}:{card_id}"
         )
-        kb.add(InlineKeyboardButton(title, callback_data=payload))
+
+        kb.add(
+            InlineKeyboardButton(
+                format_mastercard_card_button_title(card),
+                callback_data=payload,
+            )
+        )
 
     await callback.bot.send_message(
         callback.from_user.id,
-        "Выберите карту для передачи реквизитов пользователю:",
+        f"💳 Выберите Mastercard-карту для заявки #{int(rec['order_id'])} на {amount_rub} ₽:",
         reply_markup=kb,
     )
 
 
 async def operator_card_selected(callback: types.CallbackQuery) -> None:
-    """Обработка выбора карты оператором. Сохраняет реквизиты и обновляет карточку без лишнего уведомления для WEB."""
+    """Выдаёт пользователю реквизиты Mastercard-карты с проверкой лимитов."""
     await callback.answer()
+
     try:
         await callback.message.delete()
     except Exception:
@@ -1370,6 +1353,7 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
             rec = await get_order_by_id(order_id)
         except Exception:
             rec = None
+
     if rec is None and user_id is not None:
         rec = await get_pending_order(user_id)
 
@@ -1383,45 +1367,66 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
     is_guest = _is_guest_order(rec, user_id)
 
     operator = await get_user(operator_id)
-    if not operator or operator.get("role") not in ("Operator", "Admin"):
+    role = str((operator or {}).get("role") or "").strip()
+    if role not in ("Operator", "Admin", "MasterCard", "mastercard"):
         await callback.answer("🚫 Доступ запрещён", show_alert=True)
         return
 
-    cards = await get_all_cards()
-    card = next((c for c in cards if c["card_id"] == card_id), None)
+    try:
+        payment = math.ceil(float(rec.get("total_rub") or rec.get("rub_amount") or 0))
+    except Exception:
+        payment = 0
+
+    card, deny_reason = await get_mastercard_card_for_issue(
+        int(card_id or 0),
+        float(payment),
+    )
     if not card:
-        await callback.bot.send_message(operator_id, "⚠️ Карта не найдена.")
+        await callback.bot.send_message(
+            operator_id,
+            f"⚠️ Карту нельзя выдать.\n\nПричина: {deny_reason}",
+        )
         return
 
-    method = rec.get("payment_method", "card")
+    method = str(rec.get("payment_method") or "card").strip().lower()
     if method == "sbp":
-        chosen = card.get("sbp_phone")
+        chosen = str(card.get("sbp_phone") or "").strip()
         if not chosen:
-            await callback.bot.send_message(
-                operator_id, "⚠️ У этой карты не указан номер для СБП."
-            )
+            await callback.bot.send_message(operator_id, "⚠️ У этой карты не указан номер для СБП.")
             return
     else:
-        chosen = card.get("card_number")
+        method = "card"
+        chosen = str(card.get("card_number") or "").strip()
         if not chosen:
-            await callback.bot.send_message(
-                operator_id, "⚠️ У этой карты не указан номер карты."
-            )
+            await callback.bot.send_message(operator_id, "⚠️ У этой карты не указан номер карты.")
             return
+
+    bank_name = str(card.get("bank_name") or "Банк").strip()
+    mastercard_owner_id = int(card.get("owner_id") or operator_id)
 
     db_conn = await get_db()
     await db_conn.execute(
         """
         UPDATE p2p_orders
-           SET bank_card = ?, bank_name = ?, payment_method = ?, card_id = ?
-         WHERE order_id  = ?
+           SET bank_card = ?,
+               bank_name = ?,
+               payment_method = ?,
+               card_id = ?,
+               operator_id = ?
+         WHERE order_id = ?
         """,
-        (chosen, card["bank_name"], method, card_id, db_order_id),
+        (
+            chosen,
+            bank_name,
+            method,
+            int(card["card_id"]),
+            mastercard_owner_id,
+            db_order_id,
+        ),
     )
     await db_conn.commit()
 
     comment = await get_user_comment(operator_id) or "без комментария"
-    payment = math.ceil(float(rec["total_rub"]))
 
     if not is_guest and user_id in pending_buy_messages:
         chat_id, msg_id = pending_buy_messages.pop(user_id)
@@ -1433,15 +1438,14 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
     if not is_guest:
         text_user = INSTRUCTION_TEXT_TEMPLATE_USER.format(
             card=chosen,
-            bank=card["bank_name"],
+            bank=bank_name,
             comment=comment,
             amount=payment,
         )
+
         ikb = InlineKeyboardMarkup().add(
             InlineKeyboardButton("✅ Оплатил", callback_data="paid"),
-            InlineKeyboardButton(
-                "🚫 Отменить", callback_data=f"user_cancel_order:{db_order_id}"
-            ),
+            InlineKeyboardButton("🚫 Отменить", callback_data=f"user_cancel_order:{db_order_id}"),
         )
 
         await bot_send(
@@ -1451,102 +1455,37 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
             parse_mode="Markdown",
             reply_markup=ikb,
         )
-
-    try:
-        btc_amt = float(rec.get("btc_amount", 0))
-
-        raw_wallet = rec.get("wallet", "")
-        wallet = _h(raw_wallet)
-        asset = _guess_asset_from_wallet(str(raw_wallet), rec)
-        mention = await _build_order_user_mention(callback.bot, user_id, rec)
-
-        raw_sum = (
-            rec.get("rub_amount")
-            or rec.get("amount_rub")
-            or rec.get("amount")
-            or rec.get("total_rub", 0)
-        )
-        try:
-            sum_rub = math.ceil(float(raw_sum))
-        except Exception:
-            sum_rub = math.ceil(float(rec.get("total_rub", 0)))
-
-        base_rate = await get_usd_rub()
-        now = datetime.now()
-        date_str = now.strftime("%d.%m.%Y")
-        time_str = now.strftime("%H:%M")
-
-        req_number = _h(str(chosen))
-        req_bank = _h(card["bank_name"])
-        req_comment = _h(comment)
-
-        updated_text = (
-            f"📥 Заявка #{db_order_id}\n\n"
-            f"От: {mention}\n"
-            f"Сумма: {sum_rub} ₽\n"
-            f"К выдаче: {_format_asset_amount_for_operator(asset, btc_amt)} {asset}\n"
-            f"Кошелек {asset}: <code>{wallet}</code>\n\n"
-            f"Дата: {date_str}\n"
-            f"Время: {time_str}\n"
-            f"Курс: {base_rate:.2f} ₽\n\n"
-            f"📝 Реквизиты для оплаты:\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-            f"▶ Номер:    {req_number}\n"
-            f"▶ Банк:     {req_bank}\n"
-            f"▶ Коммент.: {req_comment}\n"
-            f"▶ Сумма:    {payment} ₽\n"
-            f"➖➖➖➖➖➖➖➖➖➖"
+    else:
+        await callback.bot.send_message(
+            operator_id,
+            "ℹ️ Это WEB-заявка. Реквизиты сохранены в заявке и будут показаны на web-странице.",
         )
 
-        kb = (
-            _kb_op_guest_order_actions(
-                user_id,
-                db_order_id,
-                show_cards=False,
-                hide_cancel=True,
-            )
-            if is_guest
-            else _kb_op_order_actions(
-                user_id,
-                db_order_id,
-                hide_cancel=True,
-                hide_payment_actions=True,
-            )
-        )
+    await update_operator_order_card_with_requisites(
+        callback.bot,
+        operator_id=operator_id,
+        user_id=user_id,
+        order_id=db_order_id,
+        rec=rec,
+        number=chosen,
+        bank_name=bank_name,
+        comment=comment,
+        payment_rub=payment,
+    )
 
-        key = (operator_id, db_order_id)
-        msg_id = operator_order_msgs.get(key)
+    text_mc = INSTRUCTION_TEXT_TEMPLATE.format(
+        card=chosen,
+        bank=bank_name,
+        comment=comment,
+        amount=payment,
+    )
 
-        if msg_id:
-            try:
-                await callback.bot.edit_message_text(
-                    updated_text,
-                    chat_id=operator_id,
-                    message_id=msg_id,
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                )
-            except Exception:
-                new_msg = await bot_send(
-                    callback.bot,
-                    operator_id,
-                    updated_text,
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                )
-                operator_order_msgs[key] = new_msg.message_id
-        else:
-            new_msg = await bot_send(
-                callback.bot,
-                operator_id,
-                updated_text,
-                parse_mode="HTML",
-                reply_markup=kb,
-            )
-            operator_order_msgs[(operator_id, db_order_id)] = new_msg.message_id
-
-    except Exception:
-        logger.exception("Failed to update operator order card with payment details")
+    await callback.bot.send_message(
+        operator_id,
+        text_mc,
+        parse_mode="Markdown",
+        reply_markup=DEFAULT_OP_KB,
+    )
 
 # -----------------------------------------------------------------------------
 # Раздел: Хендлеры — открытие заявки и обновление карточки
