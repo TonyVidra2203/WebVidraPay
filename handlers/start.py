@@ -20,26 +20,10 @@ def _build_mastercard_web_url(user_id: int) -> str:
     """
     Собирает ссылку для кнопки MasterCard.
 
-    Когда будет готов mastercard_webhook.py, ссылка должна вести на:
-    https://твой-домен/mastercard?user_id=ID
-
-    Для этого в .env можно будет указать один из вариантов:
-    MASTERCARD_WEB_BASE_URL=https://твой-домен
-    WEBAPP_BASE_URL=https://твой-домен
-    BASE_URL=https://твой-домен
+    Кнопка ведёт на рабочий домен web-версии:
+    https://webvidra.com/mastercard?user_id=TELEGRAM_ID
     """
-    base_url = (
-        os.getenv("MASTERCARD_WEB_BASE_URL")
-        or os.getenv("WEBAPP_BASE_URL")
-        or os.getenv("BASE_URL")
-        or ""
-    ).strip().rstrip("/")
-
-    if not base_url:
-        return "https://webvidra.com"
-
-    return f"{base_url}/mastercard?user_id={user_id}"
-
+    return f"https://webvidra.com/mastercard?user_id={user_id}"
 
 # -----------------------------------------------------------------------------
 # Раздел: Обработчики команд
