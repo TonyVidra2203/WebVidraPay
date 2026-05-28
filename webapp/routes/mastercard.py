@@ -159,22 +159,55 @@ def _redirect(user_id: int, anchor: str = "") -> RedirectResponse:
 
 
 def _alert_redirect(user_id: int, message: str, anchor: str = "cards") -> HTMLResponse:
-    safe_message = (
-        str(message or "")
-        .replace("\\", "\\\\")
-        .replace("'", "\\'")
-        .replace("\n", " ")
-    )
+    safe_message = _esc(str(message or ""))
     suffix = f"#{anchor}" if anchor else ""
+    target_url = f"/mastercard?user_id={int(user_id)}{suffix}"
     return HTMLResponse(
         f"""
-        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-        <body style="background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-        <script>
-          alert('{safe_message}');
-          window.location.href = '/mastercard?user_id={int(user_id)}{suffix}';
-        </script>
-        </body></html>
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+          <title>MasterCard</title>
+          <style>
+            :root {{
+              --bg:#000000;
+              --card:#121318;
+              --line:rgba(255,255,255,.20);
+              --text:#f6f3ea;
+              --muted:#a9acb4;
+              --accent:#d6b35f;
+              --accent2:#e1c46f;
+            }}
+            *{{box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
+            html,body{{margin:0;width:100%;min-height:100%;background:#000;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
+            .wrap{{min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:18px;background:radial-gradient(circle at 50% 0%,rgba(214,179,95,.14),transparent 42%),#000}}
+            .modal{{width:100%;max-width:360px;border:1px solid rgba(214,179,95,.28);border-radius:26px;background:linear-gradient(180deg,#171820,#0d0d10);box-shadow:0 28px 70px rgba(0,0,0,.72);overflow:hidden;text-align:center}}
+            .head{{padding:20px 18px 10px}}
+            .icon{{width:54px;height:54px;margin:0 auto 12px;border-radius:19px;display:grid;place-items:center;border:1px solid rgba(214,179,95,.30);background:rgba(214,179,95,.10);color:var(--accent2);font-size:26px;font-weight:950}}
+            h1{{margin:0;font-size:20px;line-height:1.15;font-weight:950;letter-spacing:-.25px}}
+            .text{{padding:8px 20px 18px;color:var(--muted);font-size:14px;line-height:1.45}}
+            .actions{{padding:0 18px 18px}}
+            .ok{{width:100%;min-height:48px;border:0;border-radius:17px;background:linear-gradient(135deg,#e1c46f,#caa24e);color:#161108;font-size:15px;font-weight:950;cursor:pointer}}
+            .ok:active{{transform:scale(.99)}}
+          </style>
+        </head>
+        <body>
+          <main class="wrap">
+            <section class="modal" role="dialog" aria-modal="true">
+              <div class="head">
+                <div class="icon">!</div>
+                <h1>Уведомление</h1>
+              </div>
+              <div class="text">{safe_message}</div>
+              <div class="actions">
+                <button class="ok" type="button" onclick="window.location.href='{target_url}'">OK</button>
+              </div>
+            </section>
+          </main>
+        </body>
+        </html>
         """
     )
 
@@ -328,7 +361,7 @@ async def _get_card_today_limit_stats(card_id: int) -> dict[str, Any]:
     return {"count": int(row[0] or 0) if row else 0, "sum": float(row[1] or 0.0) if row else 0.0, "last": last_dt}
 
 
-async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int = 18) -> list[dict[str, Any]]:
+async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int = 5, offset: int = 0) -> list[dict[str, Any]]:
     await _ensure_mastercard_web_tables()
     db = await get_db()
     cur = await db.execute(
@@ -337,9 +370,9 @@ async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int
           FROM mastercard_card_audit
          WHERE owner_id = ?
       ORDER BY id DESC
-         LIMIT ?
+         LIMIT ? OFFSET ?
         """,
-        (int(owner_id), int(limit)),
+        (int(owner_id), int(limit), max(int(offset), 0)),
     )
     rows = await cur.fetchall() or []
     await cur.close()
@@ -357,6 +390,18 @@ async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int
             "created_at": row[6] or "",
         })
     return result
+
+
+async def _count_audit_logs(owner_id: int) -> int:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM mastercard_card_audit WHERE owner_id = ?",
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return int(row[0] or 0) if row else 0
 
 
 async def _set_card_balance(card_id: int, user_id: int, target_balance: Any) -> None:
@@ -628,6 +673,10 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .log-text{{margin-top:5px;color:var(--muted);font-size:12px;line-height:1.35}}
     .log-diff{{margin-top:7px;color:var(--accent);font-size:12px;font-weight:950}}
     .log-alert{{border-color:rgba(255,105,105,.24);background:rgba(255,105,105,.045)}}
+    .log-pager{{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin-top:2px}}
+    .log-pager-info{{color:var(--muted);font-size:12px;font-weight:900;text-align:center;white-space:nowrap}}
+    .log-pager a{{min-height:38px;border-radius:15px;display:flex;align-items:center;justify-content:center}}
+
     .secret-full{{display:none}}
     .requisites-visible .secret-mask{{display:none}}
     .requisites-visible .secret-full{{display:inline}}
@@ -1282,8 +1331,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                   <input type="hidden" name="card_id" value="{card_id}">
                   <div class="withdraw-note">Текущий баланс карты: <b>{balance}</b>. Укажите сумму, которую нужно вывести с этой карты.</div>
                   <label>Сумма вывода, руб.<input name="amount" inputmode="decimal" placeholder="0" required></label>
-                  <div class="split-actions">
-                    <button class="btn ghost" type="button" data-withdraw-close="1">Отменить</button>
+                  <div class="form-actions">
                     <button class="btn" type="submit">Вывести</button>
                   </div>
                 </form>
@@ -1298,10 +1346,6 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                   <input type="hidden" name="bank_name" value="{_esc(card.get('bank_name'))}">
                   <input type="hidden" name="sbp_phone" value="{_esc(card.get('sbp_phone'))}">
                   <input type="hidden" name="card_number" value="{_format_card_groups(card.get('card_number')) if card.get('card_number') else ''}">
-                  <div class="field-box">
-                    <div class="box-title">Баланс карты</div>
-                    <label>Текущий баланс, руб.<input name="current_balance" inputmode="decimal" value="{_fmt_compact_money(card.get('_balance'))}" placeholder="0"></label>
-                  </div>
                   <div class="field-box">
                     <div class="box-title">Лимиты</div>
                     <div class="two">
@@ -1389,7 +1433,32 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
         int(card.get("card_id") or 0): str(card.get("bank_name") or f"Карта #{int(card.get('card_id') or 0)}")
         for card in enriched_cards
     }
-    audit_logs = await _load_audit_logs(int(user_id), card_names)
+    try:
+        log_page = max(int(request.query_params.get("log_page") or 1), 1)
+    except Exception:
+        log_page = 1
+    logs_per_page = 5
+    audit_total = await _count_audit_logs(int(user_id))
+    audit_pages = max((audit_total + logs_per_page - 1) // logs_per_page, 1)
+    if log_page > audit_pages:
+        log_page = audit_pages
+    audit_offset = (log_page - 1) * logs_per_page
+    audit_logs = await _load_audit_logs(int(user_id), card_names, limit=logs_per_page, offset=audit_offset)
+
+    audit_pagination_html = ""
+    if audit_total > logs_per_page:
+        prev_page = max(log_page - 1, 1)
+        next_page = min(log_page + 1, audit_pages)
+        prev_disabled = " style='opacity:.45;pointer-events:none'" if log_page <= 1 else ""
+        next_disabled = " style='opacity:.45;pointer-events:none'" if log_page >= audit_pages else ""
+        audit_pagination_html = f"""
+          <div class="log-pager">
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}&log_page={prev_page}#stats"{prev_disabled}>← Назад</a>
+            <div class="log-pager-info">{log_page} / {audit_pages}</div>
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}&log_page={next_page}#stats"{next_disabled}>Вперёд →</a>
+          </div>
+        """
+
     if audit_logs:
         audit_html = ""
         for item in audit_logs:
@@ -1417,11 +1486,12 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                 {diff_html}
               </div>
             """
+        audit_html += audit_pagination_html
     else:
         audit_html = """
           <div class="empty">
             <div class="empty-title">Журнал пока пуст</div>
-            <div class="empty-text">Здесь будут фиксироваться выводы, ручные правки баланса, включения/выключения и срабатывания лимитов.</div>
+            <div class="empty-text">Здесь будут фиксироваться выводы, изменения лимитов, включения/выключения карт, удаления и срабатывания ограничений.</div>
           </div>
         """
 
@@ -1571,7 +1641,6 @@ async def mastercard_add_card(
         daily_limit_rub: str = Form(""),
         daily_transfer_limit: str = Form(""),
         transfer_pause_minutes: str = Form(""),
-        current_balance: str = Form(""),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1602,7 +1671,6 @@ async def mastercard_update_card(
         daily_limit_rub: str = Form(""),
         daily_transfer_limit: str = Form(""),
         transfer_pause_minutes: str = Form(""),
-        current_balance: str = Form(""),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1622,13 +1690,12 @@ async def mastercard_update_card(
         daily_transfer_limit=_to_int_or_none(daily_transfer_limit),
         transfer_pause_minutes=_to_int_or_none(transfer_pause_minutes),
     )
-    await _set_card_balance(int(card_id), int(user_id), current_balance)
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
         action="settings_update",
         title="Настройки карты обновлены",
-        details="Пользователь сохранил баланс и лимиты карты.",
+        details="Пользователь изменил реквизиты и/или лимиты карты. Баланс через кабинет Mastercard не меняется.",
     )
     return _redirect(user_id, "cards")
 
@@ -1686,12 +1753,17 @@ async def mastercard_delete_card(
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
 
+    card = await get_card_by_id(card_id)
+    if not card or int(card.get("owner_id") or 0) != int(user_id):
+        return _redirect(user_id, "cards")
+
+    card_title = str(card.get("bank_name") or "").strip() or f"Карта #{int(card_id)}"
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
         action="delete_card",
         title="Карта удалена",
-        details=f"Удалена карта {str(card.get('bank_name') or '').strip() or '#' + str(card_id)}.",
+        details=f"Удалена карта {card_title}.",
     )
     await delete_card(card_id=int(card_id), owner_id=int(user_id))
     return _redirect(user_id, "cards")
@@ -1710,17 +1782,31 @@ async def mastercard_withdraw_card(
     if not card or int(card.get("owner_id") or 0) != int(user_id):
         return _redirect(user_id, "cards")
 
-    value = _to_float_or_none(amount)
-    if value and value > 0:
-        before = float(await get_card_balance(int(card_id)) or 0)
-        await add_withdrawal(admin_id=int(user_id), card_id=int(card_id), amount=float(value))
-        await _log_card_audit(
-            owner_id=int(user_id),
-            card_id=int(card_id),
-            action="withdraw",
-            title="Вывод с карты",
-            details=f"До вывода было {_fmt_money(before)}, после расчётно {_fmt_money(before - float(value))}.",
-            amount=float(value),
+    try:
+        value = _to_float_or_none(amount)
+    except Exception:
+        return _alert_redirect(int(user_id), "Введите корректную сумму вывода.", "cards")
+
+    if not value or value <= 0:
+        return _alert_redirect(int(user_id), "Введите сумму вывода больше нуля.", "cards")
+
+    before = float(await get_card_balance(int(card_id)) or 0)
+    if value > before:
+        return _alert_redirect(
+            int(user_id),
+            f"Недостаточно средств на карте. Доступно: {_fmt_money(before)}, запрошено: {_fmt_money(value)}.",
+            "cards",
         )
+
+    await add_withdrawal(admin_id=int(user_id), card_id=int(card_id), amount=float(value))
+    await _log_card_audit(
+        owner_id=int(user_id),
+        card_id=int(card_id),
+        action="withdraw",
+        title="Вывод с карты",
+        details=f"До вывода было {_fmt_money(before)}, после вывода стало {_fmt_money(before - float(value))}.",
+        amount=float(value),
+        diff=-float(value),
+    )
 
     return _redirect(user_id, "cards")
