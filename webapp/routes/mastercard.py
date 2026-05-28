@@ -150,18 +150,25 @@ def _normalize_sbp_phone(value: Any) -> Optional[str]:
     return "+" + digits
 
 
-def _redirect(user_id: int, anchor: str = "") -> RedirectResponse:
+def _redirect(user_id: int, anchor: str = "", admin_id: Optional[int] = None) -> RedirectResponse:
     suffix = f"#{anchor}" if anchor else ""
+    admin_part = f"&admin_id={int(admin_id)}" if admin_id else ""
     return RedirectResponse(
-        url=f"/mastercard?user_id={int(user_id)}{suffix}",
+        url=f"/mastercard?user_id={int(user_id)}{admin_part}{suffix}",
         status_code=303,
     )
 
 
-def _alert_redirect(user_id: int, message: str, anchor: str = "cards") -> HTMLResponse:
+def _alert_redirect(
+    user_id: int,
+    message: str,
+    anchor: str = "cards",
+    admin_id: Optional[int] = None,
+) -> HTMLResponse:
     safe_message = _esc(str(message or ""))
     suffix = f"#{anchor}" if anchor else ""
-    target_url = f"/mastercard?user_id={int(user_id)}{suffix}"
+    admin_part = f"&admin_id={int(admin_id)}" if admin_id else ""
+    target_url = f"/mastercard?user_id={int(user_id)}{admin_part}{suffix}"
     return HTMLResponse(
         f"""
         <!doctype html>
@@ -237,6 +244,22 @@ async def _ensure_mastercard_web_tables() -> None:
             amount REAL DEFAULT 0,
             diff REAL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.commit()
+
+
+async def _ensure_withdrawals_table() -> None:
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS withdrawals (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id   INTEGER NOT NULL,
+            card_id    INTEGER NOT NULL,
+            amount     REAL    NOT NULL,
+            date       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -404,11 +427,21 @@ async def _count_audit_logs(owner_id: int) -> int:
     return int(row[0] or 0) if row else 0
 
 
-async def _set_card_balance(card_id: int, user_id: int, target_balance: Any) -> None:
+async def _set_card_balance(
+    card_id: int,
+    user_id: int,
+    target_balance: Any,
+    admin_id: Optional[int] = None,
+) -> None:
+    raw = str(target_balance or "").replace(" ", "").replace(",", ".").strip()
+    if raw == "":
+        return
+
     try:
-        desired = float(str(target_balance or "").replace(" ", "").replace(",", ".").strip())
+        desired = float(raw)
     except Exception:
         return
+
     if desired < 0:
         return
 
@@ -424,7 +457,20 @@ async def _set_card_balance(card_id: int, user_id: int, target_balance: Any) -> 
     # Баланс карты считается как completed-заявки минус withdrawals.
     # Поэтому корректировка баланса фиксируется технической записью в withdrawals:
     # положительная сумма уменьшает баланс, отрицательная — увеличивает.
-    await add_withdrawal(admin_id=int(user_id), card_id=int(card_id), amount=float(diff))
+    await _ensure_withdrawals_table()
+    await add_withdrawal(
+        admin_id=int(admin_id or user_id),
+        card_id=int(card_id),
+        amount=float(diff),
+    )
+    if admin_actor_id:
+        await _set_card_balance(
+            card_id=int(card_id),
+            user_id=int(user_id),
+            target_balance=target_balance,
+            admin_id=int(admin_actor_id),
+        )
+
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
@@ -440,6 +486,12 @@ async def _is_mastercard_user(user_id: int) -> bool:
     user = await get_user(int(user_id))
     role = str((user or {}).get("role") or "").strip().lower()
     return role in {"mastercard", "admin"}
+
+
+async def _is_admin_user(user_id: int) -> bool:
+    user = await get_user(int(user_id))
+    role = str((user or {}).get("role") or "").strip().lower()
+    return role == "admin"
 
 
 async def _render_access_denied() -> HTMLResponse:
@@ -1096,6 +1148,32 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
     if not await _is_mastercard_user(user_id):
         return await _render_access_denied()
 
+    admin_id: Optional[int] = None
+    admin_mode = False
+    try:
+        admin_id_raw = request.query_params.get("admin_id") or ""
+        admin_id = int(admin_id_raw) if admin_id_raw else None
+    except Exception:
+        admin_id = None
+
+    if admin_id and await _is_admin_user(admin_id):
+        admin_mode = True
+    else:
+        admin_id = None
+
+    admin_hidden_input = (
+        f'<input type="hidden" name="admin_id" value="{int(admin_id)}">'
+        if admin_mode and admin_id else ""
+    )
+    balance_admin_field_template = (
+        '<div class="field-box">'
+        '<div class="box-title">Админ</div>'
+        '<label>Баланс карты, руб.<input name="target_balance" inputmode="decimal" value="{balance_raw}"></label>'
+        '<div class="help">Поле видно только админу. После сохранения баланс сразу пересчитывается на карте.</div>'
+        '</div>'
+        if admin_mode else ""
+    )
+
     cards = await get_cards_by_owner(user_id)
     completed_orders = await get_completed_orders_by_master(user_id)
 
@@ -1240,11 +1318,13 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                       <button class="eye-btn" type="button" data-toggle-requisites="{card_id}" aria-label="Показать реквизиты">🙈</button>
                       <form class="icon-form" method="post" action="/mastercard/card/delete" onsubmit="return confirm('Удалить карту {bank_name}?')">
                         <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
                         <input type="hidden" name="card_id" value="{card_id}">
                         <button class="icon-btn trash" type="submit" aria-label="Удалить карту">🗑️</button>
                       </form>
                       <form class="icon-form" method="post" action="/mastercard/card/toggle">
                         <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
                         <input type="hidden" name="card_id" value="{card_id}">
                         <button class="icon-btn power {'on' if is_active else 'off'}" type="submit" aria-label="{'Выключить карту' if is_active else 'Включить карту'}">⏻</button>
                       </form>
@@ -1297,6 +1377,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                 <div class="edit-body">
                   <form class="form" method="post" action="/mastercard/card/update">
                     <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
                     <input type="hidden" name="card_id" value="{card_id}">
                     <div class="field-box">
                       <div class="box-title">Реквизиты</div>
@@ -1316,6 +1397,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                       </div>
                       <label>Пауза, мин.<input name="transfer_pause_minutes" inputmode="numeric" value="{_fmt_compact_money(card.get('transfer_pause_minutes'))}"></label>
                     </div>
+                    {balance_admin_field_template.format(balance_raw=_fmt_compact_money(card.get("_balance")))}
                     <div class="form-actions">
                       <button class="btn" type="submit">Сохранить</button>
                     </div>
@@ -1328,6 +1410,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
               <div class="withdraw-form" id="withdraw-card-{card_id}">
                 <form class="form" method="post" action="/mastercard/card/withdraw">
                   <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
                   <input type="hidden" name="card_id" value="{card_id}">
                   <div class="withdraw-note">Текущий баланс карты: <b>{balance}</b>. Укажите сумму, которую нужно вывести с этой карты.</div>
                   <label>Сумма вывода, руб.<input name="amount" inputmode="decimal" placeholder="0" required></label>
@@ -1342,6 +1425,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
               <div class="modal-card-form" id="modal-edit-card-{card_id}">
                 <form class="form" method="post" action="/mastercard/card/update">
                   <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
                   <input type="hidden" name="card_id" value="{card_id}">
                   <input type="hidden" name="bank_name" value="{_esc(card.get('bank_name'))}">
                   <input type="hidden" name="sbp_phone" value="{_esc(card.get('sbp_phone'))}">
@@ -1358,6 +1442,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                     </div>
                     <label>Пауза, мин.<input name="transfer_pause_minutes" inputmode="numeric" value="{_fmt_compact_money(card.get('transfer_pause_minutes'))}"></label>
                   </div>
+                  {balance_admin_field_template.format(balance_raw=_fmt_compact_money(card.get("_balance")))}
                   <div class="form-actions">
                     <button class="btn" type="submit">Сохранить</button>
                   </div>
@@ -1528,6 +1613,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
           <div class="add-card">
             <form class="form" method="post" action="/mastercard/card/add">
               <input type="hidden" name="user_id" value="{int(user_id)}">
+                        {admin_hidden_input}
               <div class="field-box">
                 <div class="box-title">Реквизиты</div>
                 <label>Банк<input name="bank_name" required placeholder="Например: Сбер"></label>
@@ -1633,6 +1719,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
 @router.post("/card/add")
 async def mastercard_add_card(
         user_id: int = Form(...),
+        admin_id: str = Form(""),
         bank_name: str = Form(...),
         sbp_phone: str = Form(""),
         card_number: str = Form(""),
@@ -1641,9 +1728,18 @@ async def mastercard_add_card(
         daily_limit_rub: str = Form(""),
         daily_transfer_limit: str = Form(""),
         transfer_pause_minutes: str = Form(""),
+        target_balance: str = Form(""),
 ):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
     if not await _is_mastercard_user(user_id):
-        return _redirect(user_id)
+        return _redirect(user_id, admin_id=admin_actor_id)
 
     await add_card(
         owner_id=int(user_id),
@@ -1656,12 +1752,13 @@ async def mastercard_add_card(
         daily_transfer_limit=_to_int_or_none(daily_transfer_limit),
         transfer_pause_minutes=_to_int_or_none(transfer_pause_minutes),
     )
-    return _redirect(user_id, "cards")
+    return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
 
 @router.post("/card/update")
 async def mastercard_update_card(
         user_id: int = Form(...),
+        admin_id: str = Form(""),
         card_id: int = Form(...),
         bank_name: str = Form(...),
         sbp_phone: str = Form(""),
@@ -1672,12 +1769,20 @@ async def mastercard_update_card(
         daily_transfer_limit: str = Form(""),
         transfer_pause_minutes: str = Form(""),
 ):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
     if not await _is_mastercard_user(user_id):
-        return _redirect(user_id)
+        return _redirect(user_id, admin_id=admin_actor_id)
 
     card = await get_card_by_id(card_id)
     if not card or int(card.get("owner_id") or 0) != int(user_id):
-        return _redirect(user_id, "cards")
+        return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
     await update_card(
         int(card_id),
@@ -1690,27 +1795,48 @@ async def mastercard_update_card(
         daily_transfer_limit=_to_int_or_none(daily_transfer_limit),
         transfer_pause_minutes=_to_int_or_none(transfer_pause_minutes),
     )
+    if admin_actor_id:
+        await _set_card_balance(
+            card_id=int(card_id),
+            user_id=int(user_id),
+            target_balance=target_balance,
+            admin_id=int(admin_actor_id),
+        )
+
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
         action="settings_update",
         title="Настройки карты обновлены",
-        details="Пользователь изменил реквизиты и/или лимиты карты. Баланс через кабинет Mastercard не меняется.",
+        details=(
+            "Админ изменил реквизиты/лимиты и при необходимости баланс карты."
+            if admin_actor_id else
+            "Пользователь изменил реквизиты и/или лимиты карты. Баланс через кабинет Mastercard не меняется."
+        ),
     )
-    return _redirect(user_id, "cards")
+    return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
 
 @router.post("/card/toggle")
 async def mastercard_toggle_card(
         user_id: int = Form(...),
+        admin_id: str = Form(""),
         card_id: int = Form(...),
 ):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
     if not await _is_mastercard_user(user_id):
-        return _redirect(user_id)
+        return _redirect(user_id, admin_id=admin_actor_id)
 
     card = await get_card_by_id(card_id)
     if not card or int(card.get("owner_id") or 0) != int(user_id):
-        return _redirect(user_id, "cards")
+        return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
     currently_active = bool(card.get("is_active", True))
     if not currently_active:
@@ -1726,6 +1852,7 @@ async def mastercard_toggle_card(
                 int(user_id),
                 f"Карту нельзя включить: {reason}. Дождитесь окончания лимита ({until}) или измените лимиты этой карты.",
                 "cards",
+                admin_id=admin_actor_id,
             )
         await _clear_limit_lock(int(card_id))
 
@@ -1742,20 +1869,29 @@ async def mastercard_toggle_card(
         title="Карта включена" if new_state else "Карта выключена",
         details="Пользователь изменил статус карты вручную.",
     )
-    return _redirect(user_id, "cards")
+    return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
 
 @router.post("/card/delete")
 async def mastercard_delete_card(
         user_id: int = Form(...),
+        admin_id: str = Form(""),
         card_id: int = Form(...),
 ):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
     if not await _is_mastercard_user(user_id):
-        return _redirect(user_id)
+        return _redirect(user_id, admin_id=admin_actor_id)
 
     card = await get_card_by_id(card_id)
     if not card or int(card.get("owner_id") or 0) != int(user_id):
-        return _redirect(user_id, "cards")
+        return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
     card_title = str(card.get("bank_name") or "").strip() or f"Карта #{int(card_id)}"
     await _log_card_audit(
@@ -1766,29 +1902,38 @@ async def mastercard_delete_card(
         details=f"Удалена карта {card_title}.",
     )
     await delete_card(card_id=int(card_id), owner_id=int(user_id))
-    return _redirect(user_id, "cards")
+    return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
 
 @router.post("/card/withdraw")
 async def mastercard_withdraw_card(
         user_id: int = Form(...),
+        admin_id: str = Form(""),
         card_id: int = Form(...),
         amount: str = Form(...),
 ):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
     if not await _is_mastercard_user(user_id):
-        return _redirect(user_id)
+        return _redirect(user_id, admin_id=admin_actor_id)
 
     card = await get_card_by_id(card_id)
     if not card or int(card.get("owner_id") or 0) != int(user_id):
-        return _redirect(user_id, "cards")
+        return _redirect(user_id, "cards", admin_id=admin_actor_id)
 
     try:
         value = _to_float_or_none(amount)
     except Exception:
-        return _alert_redirect(int(user_id), "Введите корректную сумму вывода.", "cards")
+        return _alert_redirect(int(user_id), "Введите корректную сумму вывода.", "cards", admin_id=admin_actor_id)
 
     if not value or value <= 0:
-        return _alert_redirect(int(user_id), "Введите сумму вывода больше нуля.", "cards")
+        return _alert_redirect(int(user_id), "Введите сумму вывода больше нуля.", "cards", admin_id=admin_actor_id)
 
     before = float(await get_card_balance(int(card_id)) or 0)
     if value > before:
@@ -1796,9 +1941,11 @@ async def mastercard_withdraw_card(
             int(user_id),
             f"Недостаточно средств на карте. Доступно: {_fmt_money(before)}, запрошено: {_fmt_money(value)}.",
             "cards",
+            admin_id=admin_actor_id,
         )
 
-    await add_withdrawal(admin_id=int(user_id), card_id=int(card_id), amount=float(value))
+    await _ensure_withdrawals_table()
+    await add_withdrawal(admin_id=int(admin_actor_id or user_id), card_id=int(card_id), amount=float(value))
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
@@ -1809,4 +1956,4 @@ async def mastercard_withdraw_card(
         diff=-float(value),
     )
 
-    return _redirect(user_id, "cards")
+    return _redirect(user_id, "cards", admin_id=admin_actor_id)

@@ -84,14 +84,27 @@ LIMIT_FIELD_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _main_cards_kb(admin_mode: bool = False) -> InlineKeyboardMarkup:
+def _main_cards_kb(
+    admin_mode: bool = False,
+    owner_id: Optional[int] = None,
+    admin_id: Optional[int] = None,
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("➕ Добавить", callback_data="mc_card_add"),
         InlineKeyboardButton("✏️ Редактировать", callback_data="mc_card_edit_select"),
     )
-    if admin_mode:
+
+    if admin_mode and owner_id:
+        admin_part = f"&admin_id={int(admin_id)}" if admin_id else ""
+        kb.add(
+            InlineKeyboardButton(
+                "🌐 Веб-кабинет",
+                url=f"https://webvidra.com/mastercard?user_id={int(owner_id)}{admin_part}",
+            )
+        )
         kb.add(InlineKeyboardButton("⬅️ Все кабинеты", callback_data="mc_admin_back_to_owners"))
+
     return kb
 
 
@@ -379,7 +392,11 @@ async def _send_owner_cards_screen(
     await bot.send_message(
         chat_id,
         text,
-        reply_markup=_main_cards_kb(admin_mode=admin_mode),
+        reply_markup=_main_cards_kb(
+            admin_mode=admin_mode,
+            owner_id=owner_id,
+            admin_id=chat_id if admin_mode else None,
+        ),
     )
 
 
@@ -434,7 +451,15 @@ async def mc_admin_open_owner(callback: types.CallbackQuery, state: FSMContext) 
 
 
 async def mastercard_cards_menu(message: types.Message, state: FSMContext) -> None:
-    if not await is_mastercard_user(message.from_user.id):
+    user_id = message.from_user.id
+
+    if await _is_admin_user(user_id):
+        await state.finish()
+        text, kb = await _compose_admin_owners_text_and_kb()
+        await message.answer(text, reply_markup=kb)
+        return
+
+    if not await is_mastercard_user(user_id):
         await message.answer("⛔ У вас нет доступа.")
         return
 
@@ -442,7 +467,7 @@ async def mastercard_cards_menu(message: types.Message, state: FSMContext) -> No
     await _send_owner_cards_screen(
         bot=message.bot,
         chat_id=message.chat.id,
-        owner_id=message.from_user.id,
+        owner_id=user_id,
         admin_mode=False,
     )
 
