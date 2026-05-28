@@ -989,18 +989,84 @@ async def _get_orders_by_master(
 
 
 async def get_active_orders_by_master(operator_id: int) -> List[Dict[str, Any]]:
-    """Возвращает активные (pending) заявки конкретного оператора."""
-    return await _get_orders_by_master(operator_id, "pending")
+    """
+    Возвращает активные заявки конкретного Mastercard/оператора.
+
+    Для Mastercard-кабинета заявки привязываются не только через operator_id,
+    но и через p2p_orders.card_id -> cards.owner_id. Это важно для WEB/VidraPay:
+    заявку может завершать админ, а карта всё равно принадлежит Mastercard.
+    """
+    return await _fetchall_dict(
+        """
+        SELECT p.*
+          FROM p2p_orders p
+         WHERE p.status = 'pending'
+           AND (
+                p.operator_id = ?
+                OR p.card_id IN (
+                    SELECT c.card_id
+                      FROM cards c
+                     WHERE c.owner_id = ?
+                )
+           )
+      ORDER BY datetime(COALESCE(p.payment_confirmed_at, p.created_at)) DESC,
+               p.order_id DESC
+        """,
+        (int(operator_id), int(operator_id)),
+    )
 
 
 async def get_completed_orders_by_master(operator_id: int) -> List[Dict[str, Any]]:
-    """Возвращает завершённые заявки конкретного оператора."""
-    return await _get_orders_by_master(operator_id, "completed")
+    """
+    Возвращает завершённые заявки конкретного Mastercard/оператора.
+
+    Старое поведение смотрело только p2p_orders.operator_id. Для VidraPay это
+    недостаточно: Mastercard получает деньги на свою карту, но финально заявку
+    может закрыть админ, поэтому в кабинете нужно искать также по card_id карт,
+    принадлежащих этому Mastercard.
+    """
+    return await _fetchall_dict(
+        """
+        SELECT p.*
+          FROM p2p_orders p
+         WHERE p.status = 'completed'
+           AND (
+                p.operator_id = ?
+                OR p.card_id IN (
+                    SELECT c.card_id
+                      FROM cards c
+                     WHERE c.owner_id = ?
+                )
+           )
+      ORDER BY datetime(COALESCE(p.completed_at, p.created_at)) DESC,
+               p.order_id DESC
+        """,
+        (int(operator_id), int(operator_id)),
+    )
 
 
 async def get_canceled_orders_by_master(operator_id: int) -> List[Dict[str, Any]]:
-    """Возвращает отменённые заявки конкретного оператора."""
-    return await _get_orders_by_master(operator_id, "canceled")
+    """
+    Возвращает отменённые заявки конкретного Mastercard/оператора.
+    """
+    return await _fetchall_dict(
+        """
+        SELECT p.*
+          FROM p2p_orders p
+         WHERE p.status = 'canceled'
+           AND (
+                p.operator_id = ?
+                OR p.card_id IN (
+                    SELECT c.card_id
+                      FROM cards c
+                     WHERE c.owner_id = ?
+                )
+           )
+      ORDER BY datetime(COALESCE(p.completed_at, p.created_at)) DESC,
+               p.order_id DESC
+        """,
+        (int(operator_id), int(operator_id)),
+    )
 
 
 async def get_pending_order(user_id: int) -> Optional[Dict[str, Any]]:

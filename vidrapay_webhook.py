@@ -577,17 +577,15 @@ async def _filter_cards_by_vidrapay_distribution(
     order_id: int = 0,
 ) -> List[Dict[str, Any]]:
     """
-    Фильтр выдачи VidraPay-реквизитов по ограничениям самой карты MasterCard.
+    Фильтр выдачи VidraPay-реквизитов по ограничениям Mastercard-карты.
 
-    Старые глобальные ограничения VidraPay здесь больше не используются.
-    Теперь каждая карта сама задаёт свои правила:
-
-    - min_amount_rub / max_amount_rub уже отфильтрованы выше через get_active_cards_for_amount();
-    - daily_limit_rub: дневной лимит в рублях по успешным completed-заявкам;
-    - daily_transfer_limit: количество успешных переводов за текущий день;
-    - transfer_pause_minutes: пауза после последнего успешного completed-перевода.
-
-    Если карта не проходит хотя бы одно правило — она не попадает на страницу оплаты.
+    Важно:
+    - min_amount_rub / max_amount_rub уже применяются выше через get_active_cards_for_amount();
+    - daily_limit_rub и daily_transfer_limit считаются по successful completed-заявкам;
+    - сутки считаем так же, как в Mastercard-кабинете: по Новосибирску (UTC+7);
+    - transfer_pause_minutes считается от последней successful completed-заявки по карте;
+    - текущая заявка добавляется к дневной сумме, чтобы карта не выдавалась,
+      если этот перевод сразу пробьёт лимит.
     """
     if not cards:
         return []
@@ -631,20 +629,24 @@ async def _filter_cards_by_vidrapay_distribution(
 
     stats_by_card: Dict[int, Dict[str, Any]] = {}
     try:
+        # Начало текущих суток по Новосибирску, приведённое к UTC.
+        # Так VidraPay-фильтр и Mastercard-кабинет считают дневные лимиты одинаково.
+        nsk_day_start_expr = "datetime('now', '+7 hours', 'start of day', '-7 hours')"
+
         cur = await db.execute(
             f"""
             SELECT
                 card_id,
                 COALESCE(SUM(
                     CASE
-                        WHEN datetime(COALESCE(completed_at, created_at)) >= datetime('now', 'start of day')
+                        WHEN datetime(COALESCE(completed_at, created_at)) >= {nsk_day_start_expr}
                         THEN COALESCE(total_rub, 0)
                         ELSE 0
                     END
                 ), 0) AS today_sum_rub,
                 COALESCE(SUM(
                     CASE
-                        WHEN datetime(COALESCE(completed_at, created_at)) >= datetime('now', 'start of day')
+                        WHEN datetime(COALESCE(completed_at, created_at)) >= {nsk_day_start_expr}
                         THEN 1
                         ELSE 0
                     END
@@ -705,8 +707,6 @@ async def _filter_cards_by_vidrapay_distribution(
             },
         )
 
-        # 1) Дневной лимит в рублях: учитываем уже успешные заявки за сегодня
-        #    + текущую сумму, которую пользователь хочет оплатить.
         try:
             daily_limit_rub = float(card.get("daily_limit_rub") or 0)
         except Exception:
@@ -717,7 +717,6 @@ async def _filter_cards_by_vidrapay_distribution(
             if today_sum + order_amount_rub > daily_limit_rub:
                 continue
 
-        # 2) Количество успешных переводов в день.
         try:
             daily_transfer_limit = int(card.get("daily_transfer_limit") or 0)
         except Exception:
@@ -728,7 +727,6 @@ async def _filter_cards_by_vidrapay_distribution(
             if today_count >= daily_transfer_limit:
                 continue
 
-        # 3) Пауза после последнего успешного перевода.
         try:
             pause_minutes = int(card.get("transfer_pause_minutes") or 0)
         except Exception:
@@ -1026,11 +1024,11 @@ async def _notify_paid_to_admins(order: Dict[str, Any]) -> None:
 
 async def _cancel_web_order(order: Dict[str, Any]) -> None:
     """
-    Тихо отменяет WEB-заявку из платёжной страницы VidraPay.
+    Отменяет WEB-заявку из платёжной страницы VidraPay.
 
-    Важно: уведомление администраторам здесь не отправляем.
-    Пользователь может просто передумать или ошибочно открыть оплату,
-    поэтому отмена с сайта не должна засорять админские чаты.
+    Админам/Mastercard отмену не рассылаем, чтобы не засорять рабочие чаты.
+    Если у заявки есть обычный Telegram user_id, пользователь получает личное
+    уведомление об отмене и сразу возвращается в классическое стартовое меню.
     """
     order_id = int(order.get("order_id") or 0)
     user_id = int(order.get("user_id") or 0)
@@ -1047,6 +1045,27 @@ async def _cancel_web_order(order: Dict[str, Any]) -> None:
         (order_id, user_id),
     )
     await db.commit()
+
+    if user_id <= 0:
+        return
+
+    bot = Bot(token=settings.bot_token, parse_mode="HTML")
+    try:
+        with suppress(Exception):
+            await bot.send_message(
+                user_id,
+                f"🚫 <b>Заявка №{order_id} отменена.</b>\n\n"
+                "Вы вернулись в главное меню.",
+                parse_mode="HTML",
+            )
+
+        with suppress(Exception):
+            from handlers.common import send_welcome
+            await send_welcome(bot, user_id)
+    finally:
+        with suppress(Exception):
+            session = await bot.get_session()
+            await session.close()
 
 
 def _build_view_order(order: Dict[str, Any], token: str) -> Dict[str, Any]:

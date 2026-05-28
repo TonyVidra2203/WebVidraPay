@@ -18,6 +18,7 @@ from services.mastercard_cards import (
     get_mastercard_card_for_issue,
 )
 from db.connection import get_db
+from db.cards import get_all_cards
 from db.p2p import assign_operator_to_order, delete_order, get_order_by_id, get_pending_order
 from handlers.chat.instruction import INSTRUCTION_TEXT_TEMPLATE, INSTRUCTION_TEXT_TEMPLATE_USER
 from handlers.chat.templates import DEFAULT_OP_KB
@@ -1245,11 +1246,100 @@ async def operator_reject(callback: types.CallbackQuery) -> None:
         pass
 
 
+
+def _normalize_role_name(user: Optional[Dict[str, Any]]) -> str:
+    """Возвращает роль пользователя в нижнем регистре."""
+    return str((user or {}).get("role") or "").strip().lower()
+
+
+def _card_has_required_requisites(card: Dict[str, Any], method: str) -> bool:
+    """Проверяет, есть ли у карты реквизиты под выбранный способ оплаты."""
+    method_l = str(method or "").strip().lower()
+    if method_l == "sbp":
+        return bool(str(card.get("sbp_phone") or "").strip())
+    return bool(str(card.get("card_number") or "").strip())
+
+
+def _mask_requisites(value: Any) -> str:
+    """Коротко маскирует карту/телефон для кнопки выбора."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        return "—"
+    if len(digits) <= 4:
+        return digits
+    if len(digits) <= 11:
+        return f"••{digits[-4:]}"
+    return f"{digits[:4]}••{digits[-4:]}"
+
+
+def _format_card_choice_button(card: Dict[str, Any], *, method: str, is_admin: bool = False) -> str:
+    """
+    Компактный и понятный заголовок кнопки выбора карты.
+
+    Telegram ограничивает длину текста кнопки, поэтому показываем:
+    банк → нужные реквизиты → id карты → владелец для админа.
+    """
+    bank = str(card.get("bank_name") or "Банк").strip()
+    card_id = int(card.get("card_id") or 0)
+    owner_id = int(card.get("owner_id") or 0)
+
+    method_l = str(method or "").strip().lower()
+    if method_l == "sbp":
+        req = _mask_requisites(card.get("sbp_phone"))
+        prefix = "⚡ СБП"
+    else:
+        req = _mask_requisites(card.get("card_number"))
+        prefix = "💳 Карта"
+
+    base = f"{prefix} • {bank} • {req} • #{card_id}"
+    if is_admin and owner_id > 0:
+        base += f" • MC {owner_id}"
+
+    return base[:64]
+
+
+def _build_cards_choice_text(
+    *,
+    order_id: int,
+    amount_rub: int,
+    method: str,
+    is_admin: bool,
+    cards_count: int,
+) -> str:
+    method_label = "СБП" if str(method or "").lower() == "sbp" else "карта"
+    if is_admin:
+        mode = (
+            "👑 <b>Режим админа:</b> показаны карты всех Mastercard "
+            "без фильтров суммы, лимитов и пауз."
+        )
+    else:
+        mode = (
+            "💳 <b>Режим Mastercard:</b> показаны только ваши доступные карты "
+            "с учётом суммы, лимитов и пауз."
+        )
+
+    return (
+        f"💳 <b>Выбор карты для заявки #{order_id}</b>\n\n"
+        f"Способ: <b>{_h(method_label)}</b>\n"
+        f"Сумма: <b>{int(amount_rub)} ₽</b>\n"
+        f"Найдено карт: <b>{int(cards_count)}</b>\n\n"
+        f"{mode}\n\n"
+        "Нажмите на подходящую карту ниже."
+    )
+
+
 # -----------------------------------------------------------------------------
 # Раздел: Хендлеры — работа с картами
 # -----------------------------------------------------------------------------
 async def operator_cards(callback: types.CallbackQuery) -> None:
-    """Выбор Mastercard-карты для передачи реквизитов пользователю."""
+    """
+    Выбор Mastercard-карты для передачи реквизитов пользователю.
+
+    Логика прав:
+    - MasterCard видит только свои карты и только те, которые проходят фильтры суммы/лимитов/паузы;
+    - Admin видит карты всех Mastercard без фильтров суммы/лимитов/паузы;
+    - Operator оставлен совместимым со старым сценарием и видит доступные карты по фильтрам.
+    """
     await callback.answer()
 
     parts = (callback.data or "").split(":")
@@ -1280,19 +1370,75 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
         await callback.bot.send_message(callback.from_user.id, "⚠️ Заявка не найдена.")
         return
 
+    operator_id = int(callback.from_user.id)
+    operator = await get_user(operator_id)
+    role = _normalize_role_name(operator)
+
+    if role not in {"operator", "admin", "mastercard"}:
+        await callback.answer("🚫 Доступ запрещён", show_alert=True)
+        return
+
     try:
         amount_rub = math.ceil(float(rec.get("total_rub") or rec.get("rub_amount") or 0))
     except Exception:
         amount_rub = 0
 
-    cards = await get_available_mastercard_cards_for_amount(float(amount_rub))
+    order_db_id = int(rec["order_id"])
+    method = str(rec.get("payment_method") or "card").strip().lower()
+    if method not in {"sbp", "card"}:
+        method = "card"
+
+    is_admin = role == "admin"
+    is_mastercard = role == "mastercard"
+
+    if is_admin:
+        # Админ может выдать любую карту любого Mastercard без проверки лимитов,
+        # min/max, дневных ограничений и пауз.
+        try:
+            cards = await get_all_cards()
+        except Exception:
+            logger.exception("Не удалось получить все карты для админа")
+            cards = []
+
+        cards = [
+            card for card in cards
+            if int(card.get("owner_id") or 0) > 0
+            and _card_has_required_requisites(card, method)
+        ]
+    else:
+        # Mastercard и обычный оператор работают через существующую проверку доступности.
+        cards = await get_available_mastercard_cards_for_amount(float(amount_rub))
+
+        if is_mastercard:
+            cards = [
+                card for card in cards
+                if int(card.get("owner_id") or 0) == operator_id
+            ]
+
+        cards = [
+            card for card in cards
+            if _card_has_required_requisites(card, method)
+        ]
 
     if not cards:
-        await callback.bot.send_message(
-            callback.from_user.id,
-            "⚠️ Нет доступных Mastercard-карт под эту сумму.\n\n"
-            "Возможные причины: карты выключены, достигнут лимит, не подходит min/max или действует пауза.",
-        )
+        if is_admin:
+            reason = (
+                "У Mastercard пока нет карт с нужными реквизитами под выбранный способ оплаты."
+            )
+        elif is_mastercard:
+            reason = (
+                "У вас нет доступных карт под эту заявку.\n\n"
+                "Возможные причины: карта выключена, не подходит способ оплаты, "
+                "достигнут лимит, не подходит min/max или действует пауза."
+            )
+        else:
+            reason = (
+                "Нет доступных Mastercard-карт под эту сумму.\n\n"
+                "Возможные причины: карты выключены, достигнут лимит, "
+                "не подходит min/max или действует пауза."
+            )
+
+        await callback.bot.send_message(callback.from_user.id, f"⚠️ {reason}")
         return
 
     kb = InlineKeyboardMarkup(row_width=1)
@@ -1301,25 +1447,34 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
         if card_id <= 0:
             continue
 
-        payload = (
-            f"operator_card_selected:{user_id}:{int(rec['order_id'])}:{card_id}"
-            if rec.get("order_id") is not None
-            else f"operator_card_selected:{user_id}:{card_id}"
-        )
+        payload = f"operator_card_selected:{user_id}:{order_db_id}:{card_id}"
 
         kb.add(
             InlineKeyboardButton(
-                format_mastercard_card_button_title(card),
+                _format_card_choice_button(card, method=method, is_admin=is_admin),
                 callback_data=payload,
             )
         )
 
-    await callback.bot.send_message(
-        callback.from_user.id,
-        f"💳 Выберите Mastercard-карту для заявки #{int(rec['order_id'])} на {amount_rub} ₽:",
-        reply_markup=kb,
+    kb.add(
+        InlineKeyboardButton(
+            "↩️ Назад к заявке",
+            callback_data=f"operator_open_order:{user_id}:{order_db_id}",
+        )
     )
 
+    await callback.bot.send_message(
+        callback.from_user.id,
+        _build_cards_choice_text(
+            order_id=order_db_id,
+            amount_rub=amount_rub,
+            method=method,
+            is_admin=is_admin,
+            cards_count=len(cards),
+        ),
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
 
 async def operator_card_selected(callback: types.CallbackQuery) -> None:
     """Выдаёт пользователю реквизиты Mastercard-карты с проверкой лимитов."""
@@ -1377,18 +1532,53 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
     except Exception:
         payment = 0
 
-    card, deny_reason = await get_mastercard_card_for_issue(
-        int(card_id or 0),
-        float(payment),
-    )
-    if not card:
-        await callback.bot.send_message(
-            operator_id,
-            f"⚠️ Карту нельзя выдать.\n\nПричина: {deny_reason}",
-        )
-        return
+    role_normalized = _normalize_role_name(operator)
+    is_admin = role_normalized == "admin"
 
     method = str(rec.get("payment_method") or "card").strip().lower()
+    if method not in {"sbp", "card"}:
+        method = "card"
+
+    if is_admin:
+        # Админ выдаёт любую карту Mastercard без проверки лимитов/паузы/min/max.
+        try:
+            all_cards = await get_all_cards()
+        except Exception:
+            logger.exception("Не удалось получить список карт для админской выдачи")
+            all_cards = []
+
+        card = None
+        for item in all_cards:
+            try:
+                if int(item.get("card_id") or 0) == int(card_id or 0):
+                    card = item
+                    break
+            except Exception:
+                continue
+
+        if not card:
+            await callback.bot.send_message(operator_id, "⚠️ Карта не найдена.")
+            return
+
+        if int(card.get("owner_id") or 0) <= 0:
+            await callback.bot.send_message(operator_id, "⚠️ У этой карты не указан владелец Mastercard.")
+            return
+    else:
+        card, deny_reason = await get_mastercard_card_for_issue(
+            int(card_id or 0),
+            float(payment),
+        )
+        if not card:
+            await callback.bot.send_message(
+                operator_id,
+                f"⚠️ Карту нельзя выдать.\n\nПричина: {deny_reason}",
+            )
+            return
+
+        if role_normalized == "mastercard" and int(card.get("owner_id") or 0) != operator_id:
+            await callback.answer("🚫 Можно выдавать только свои карты.", show_alert=True)
+            return
+
     if method == "sbp":
         chosen = str(card.get("sbp_phone") or "").strip()
         if not chosen:
@@ -1473,19 +1663,6 @@ async def operator_card_selected(callback: types.CallbackQuery) -> None:
         payment_rub=payment,
     )
 
-    text_mc = INSTRUCTION_TEXT_TEMPLATE.format(
-        card=chosen,
-        bank=bank_name,
-        comment=comment,
-        amount=payment,
-    )
-
-    await callback.bot.send_message(
-        operator_id,
-        text_mc,
-        parse_mode="Markdown",
-        reply_markup=DEFAULT_OP_KB,
-    )
 
 # -----------------------------------------------------------------------------
 # Раздел: Хендлеры — открытие заявки и обновление карточки

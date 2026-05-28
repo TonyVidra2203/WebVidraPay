@@ -525,7 +525,7 @@ async def _finalize_order(
             if tid <= 0:
                 continue
 
-            if role == "mastercard":
+            if role in {"mastercard", "admin"}:
                 ops.append(tid)
 
         pending_operator_messages[user_id] = []
@@ -601,8 +601,8 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
     amt = status_data.get("amount")
     text += f"\n\nPaycore status: <b>{html.escape(str(st))}</b>\namount: <b>{html.escape(str(amt))}</b>"
 
-    from handlers.common import active_mc_sessions
     ops: List[int] = []
+    seen: set[int] = set()
     all_users = await get_all_users()
 
     for u in all_users:
@@ -614,15 +614,32 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
         except Exception:
             continue
 
-        if tid <= 0:
+        if tid <= 0 or tid in seen:
             continue
 
-        if role == "mastercard":
+        if role in {"mastercard", "admin"}:
+            seen.add(tid)
             ops.append(tid)
+
+    pending_operator_messages[user_id] = []
 
     for op in ops:
         with suppress(Exception):
-            await bot.send_message(op, text, parse_mode="HTML", reply_markup=operator_keyboard(user_id, order_id))
+            sent = await bot.send_message(
+                op,
+                text,
+                parse_mode="HTML",
+                reply_markup=operator_keyboard(user_id, order_id),
+            )
+            pending_operator_messages[user_id].append((sent.chat.id, sent.message_id))
+            with suppress(Exception):
+                await save_operator_notification(
+                    order_id=int(order_id),
+                    user_id=int(user_id),
+                    operator_id=int(op),
+                    chat_id=int(sent.chat.id),
+                    message_id=int(sent.message_id),
+                )
 
 
 async def _edit_operator_cards_to_canceled(bot: Bot, user_id: int, order: Dict[str, Any]) -> None:

@@ -1079,7 +1079,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
             f"Монета: {asset}\n"
             f"Сумма: {amount_str} {asset}\n"
             f"Адрес: {short_wallet}\n\n"
-            f"1️⃣ Оплата получена — ⏳\n"
+            f"1️⃣ Оплата получена — ✅\n"
             f"2️⃣ Средства на обменнике — ⏳\n"
             f"3️⃣ Перевод на ваш кошелёк — ⏳\n\n"
             "❗️ Если обмен не начнется в течение 10 минут — напишите в поддержку."
@@ -1136,13 +1136,24 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         "━━━━━━━━━━━━━━━━━━"
     )
 
-    ikb = InlineKeyboardMarkup()
-    ikb.row(
+    ikb_mastercard = InlineKeyboardMarkup()
+    ikb_mastercard.row(
         InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
         InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{db_order_id}"),
     )
-    ikb.add(InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}"))
-    ikb.add(InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{db_order_id}:{order_user_id}"))
+    ikb_mastercard.add(
+        InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
+    )
+
+    ikb_admin = InlineKeyboardMarkup()
+    ikb_admin.row(
+        InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
+        InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{db_order_id}"),
+    )
+    ikb_admin.add(
+        InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
+    )
+    ikb_admin.add(InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{db_order_id}:{order_user_id}"))
 
     action_name = "operator_paid_notify_web" if is_web_order else "operator_paid_notify"
 
@@ -1157,51 +1168,74 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
     if not can_notify:
         return
 
-    if is_web_order:
+    recipients: List[Tuple[int, InlineKeyboardMarkup, str]] = []
+
+    # Mastercard-владелец карты получает рабочее уведомление без кнопки «Завершить».
+    mastercard_owner_id: Optional[int] = None
+    with suppress(Exception):
         mastercard_owner_id = await _get_mastercard_owner_id_for_order(p2p)
 
-        if not mastercard_owner_id:
-            logger.warning(
-                "VidraPay WEB order has no Mastercard owner: order_id=%s card_id=%s",
-                db_order_id,
-                (p2p or {}).get("card_id"),
-            )
-            with suppress(Exception):
-                await callback.bot.send_message(
-                    callback_user_id,
-                    "⚠️ Не удалось определить Mastercard для этой оплаты. Напишите в поддержку.",
-                )
-            return
+    if mastercard_owner_id:
+        recipients.append((int(mastercard_owner_id), ikb_mastercard, "mastercard"))
 
+    # Админы получают такое же уведомление, но с кнопкой ручного завершения.
+    # Это нужно и для WEB/VidraPay, и для обычной P2P-ветки после подтверждения оплаты.
+    admin_ids = await _admin_ids()
+    for aid in admin_ids:
+        try:
+            aid_int = int(aid)
+        except Exception:
+            continue
+        recipients.append((aid_int, ikb_admin, "admin"))
+
+    # Для старых обычных сценариев, где operator_id не является Mastercard/Admin,
+    # оставляем уведомление назначенному оператору.
+    if (not is_web_order) and operator_id:
+        try:
+            op_id_int = int(operator_id)
+        except Exception:
+            op_id_int = 0
+
+        if op_id_int > 0 and all(rid != op_id_int for rid, _, _ in recipients):
+            recipients.append((op_id_int, ikb_admin, "operator"))
+
+    # Дедупликация: одному Telegram ID отправляем одно уведомление.
+    unique_recipients: List[Tuple[int, InlineKeyboardMarkup, str]] = []
+    seen_recipient_ids: Set[int] = set()
+    for rid, kb, kind in recipients:
+        if rid <= 0 or rid in seen_recipient_ids:
+            continue
+        seen_recipient_ids.add(rid)
+        unique_recipients.append((rid, kb, kind))
+
+    if is_web_order and not unique_recipients:
+        logger.warning(
+            "VidraPay WEB order has no recipients for paid notification: order_id=%s card_id=%s",
+            db_order_id,
+            (p2p or {}).get("card_id"),
+        )
+        with suppress(Exception):
+            await callback.bot.send_message(
+                callback_user_id,
+                "⚠️ Не удалось отправить уведомление по этой оплате. Напишите в поддержку.",
+            )
+        return
+
+    for recipient_id, recipient_kb, _kind in unique_recipients:
         with suppress(Exception):
             sent = await callback.bot.send_message(
-                int(mastercard_owner_id),
+                int(recipient_id),
                 admin_text,
                 parse_mode="HTML",
-                reply_markup=ikb,
+                reply_markup=recipient_kb,
                 disable_web_page_preview=True,
             )
-            STATE.pending_ff_ready_buttons[(int(mastercard_owner_id), int(db_order_id))] = (
+            STATE.pending_ff_ready_buttons[(int(recipient_id), int(db_order_id))] = (
                 sent.chat.id,
                 sent.message_id,
             )
             if order_id_int is not None:
                 await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
-    else:
-        if not operator_id:
-            return
-
-        sent = await callback.bot.send_message(
-            int(operator_id),
-            admin_text,
-            parse_mode="HTML",
-            reply_markup=ikb,
-            disable_web_page_preview=True,
-        )
-        with suppress(Exception):
-            STATE.pending_ff_ready_buttons[(int(operator_id), int(db_order_id))] = (sent.chat.id, sent.message_id)
-        if order_id_int is not None:
-            await _remember_order_ui_message(int(order_id_int), sent.chat.id, sent.message_id)
 
     if order_id_int is not None:
         with suppress(Exception):
@@ -1349,14 +1383,9 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
                 with suppress(Exception):
                     await bot.delete_message(chat_id, msg_id)
 
-        with suppress(Exception):
-            old = STATE.status_cards.get(db_order_id)
-            if old:
-                old_chat_id, old_message_id = old
-                with suppress(Exception):
-                    await bot.delete_message(old_chat_id, old_message_id)
-                with suppress(Exception):
-                    STATE.status_cards.pop(db_order_id, None)
+        # Не удаляем пользовательскую карточку статуса при старте обмена.
+        # Если автообмен упадёт, пользователь должен продолжать видеть процесс с 1 галочкой,
+        # а после ручного завершения эта же карточка обновится до 3 галочек.
 
         can_start = True
         try:
@@ -1975,7 +2004,9 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
 
     operator_id = int(callback.from_user.id)
     operator = await get_user(operator_id)
-    if not operator or operator.get("role") not in ("Operator", "Admin", "MasterCard"):
+    operator_role = str((operator or {}).get("role") or "").strip()
+
+    if not operator or operator_role not in ("Operator", "Admin", "MasterCard"):
         with suppress(Exception):
             sent = await callback.bot.send_message(operator_id, "⚠️ Недостаточно прав для запуска обмена.")
             await _remember_order_ui_message(0, sent.chat.id, sent.message_id)
@@ -2020,17 +2051,23 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
     real_user_id = int(p2p.get("user_id") or 0)
     order_user_id = real_user_id if user_id is None else int(user_id)
 
-    restore_kb = InlineKeyboardMarkup()
-    restore_kb.row(
-        InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{real_order_id}:{order_user_id}"),
-        InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{real_order_id}"),
-    )
-    restore_kb.add(
-        InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{real_order_id}:{order_user_id}")
-    )
-    restore_kb.add(
-        InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{real_order_id}:{order_user_id}")
-    )
+    def _build_order_kb(*, include_finish: bool) -> InlineKeyboardMarkup:
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{real_order_id}:{order_user_id}"),
+            InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{real_order_id}"),
+        )
+        kb.add(
+            InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{real_order_id}:{order_user_id}")
+        )
+        if include_finish:
+            kb.add(
+                InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{real_order_id}:{order_user_id}")
+            )
+        return kb
+
+    mastercard_error_kb = _build_order_kb(include_finish=False)
+    admin_error_kb = _build_order_kb(include_finish=True)
 
     async def _broadcast_exchange_error(error_text: str) -> None:
         current = p2p
@@ -2063,6 +2100,8 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             payment_method = "Akkula"
         elif payment_method_raw == "p2p":
             payment_method = "P2P"
+        elif payment_method_raw.startswith("vidrapay") or payment_method_raw.startswith("vidra-pay"):
+            payment_method = "VidraPay"
         else:
             payment_method = payment_method_raw or "—"
 
@@ -2087,8 +2126,23 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         except Exception:
             operator_name = ""
 
-        error_card_text = (
-            "❌ <b>Ошибка запуска обмена</b>\n\n"
+        # Пользователь не должен видеть ошибку обмена.
+        # Оставляем/возвращаем ему только карточку процесса с 1 галочкой.
+        if real_user_id > 0:
+            with suppress(Exception):
+                await _update_user_status_card(
+                    bot=callback.bot,
+                    order_id=int(real_order_id),
+                    asset=asset_local,
+                    amount=float(crypto_amount),
+                    wallet=wallet_local,
+                    step1_done=True,
+                    step2_done=False,
+                    step3_done=False,
+                    user_id=real_user_id,
+                )
+
+        common_details = (
             f"🆔 Заявка: <b>#{real_order_id}</b>\n"
             f"👤 Пользователь: {mention}\n"
             f"👤 ID: <b>{real_user_id}</b>\n"
@@ -2103,6 +2157,51 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             f"Причина: <b>{html_escape(human_error_text)}</b>"
         )
 
+        mastercard_error_text = (
+            "🚨 <b>ОШИБКА ОБМЕНА!</b>\n\n"
+            f"{common_details}"
+        )
+
+        admin_error_text = (
+            "🚨 <b>ОШИБКА ОБМЕНА — НУЖНО РУЧНОЕ ЗАВЕРШЕНИЕ</b>\n\n"
+            f"{common_details}"
+        )
+
+        # Mastercard должен получить ошибку заменой того же уведомления.
+        initiator_kb = admin_error_kb if operator_role in ("Admin", "Operator") else mastercard_error_kb
+        initiator_text = admin_error_text if operator_role in ("Admin", "Operator") else mastercard_error_text
+
+        initiator_updated = False
+        with suppress(Exception):
+            edited = await callback.message.edit_text(
+                initiator_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=initiator_kb,
+            )
+            STATE.pending_ff_ready_buttons[(int(operator_id), int(real_order_id))] = (
+                edited.chat.id,
+                edited.message_id,
+            )
+            await _remember_order_ui_message(int(real_order_id), edited.chat.id, edited.message_id)
+            initiator_updated = True
+
+        if not initiator_updated:
+            with suppress(Exception):
+                sent = await callback.bot.send_message(
+                    int(operator_id),
+                    initiator_text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=initiator_kb,
+                )
+                STATE.pending_ff_ready_buttons[(int(operator_id), int(real_order_id))] = (
+                    sent.chat.id,
+                    sent.message_id,
+                )
+                await _remember_order_ui_message(int(real_order_id), sent.chat.id, sent.message_id)
+
+        # Админы получают отдельную карточку ошибки с кнопкой «Завершить».
         admin_ids = await _admin_ids()
         sent_once: Set[int] = set()
 
@@ -2112,21 +2211,21 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             except Exception:
                 continue
 
-            if aid_int in sent_once:
+            if aid_int in sent_once or aid_int == int(operator_id):
                 continue
+
             sent_once.add(aid_int)
 
             with suppress(Exception):
                 sent = await callback.bot.send_message(
                     aid_int,
-                    error_card_text,
+                    admin_error_text,
                     parse_mode="HTML",
                     disable_web_page_preview=True,
-                    reply_markup=restore_kb,
+                    reply_markup=admin_error_kb,
                 )
                 STATE.pending_ff_ready_buttons[(aid_int, int(real_order_id))] = (sent.chat.id, sent.message_id)
                 await _remember_order_ui_message(int(real_order_id), sent.chat.id, sent.message_id)
-
 
     is_guest_user = real_user_id <= 0
     wallet = str(p2p.get("wallet") or "").strip()
@@ -2138,14 +2237,12 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             if user:
                 wallet = str(user.get("btc_wallet") or "").strip()
 
-    # ВАЖНО: кнопки скрываем сразу, чтобы исключить двойной клик
+    # ВАЖНО: кнопки скрываем сразу, чтобы исключить двойной клик.
+    # При ошибке обмена это же сообщение будет отредактировано и вернёт нужные кнопки.
     with suppress(Exception):
         await callback.message.edit_reply_markup(reply_markup=None)
 
     if not wallet:
-        with suppress(Exception):
-            await callback.message.delete()
-
         await _broadcast_exchange_error("wallet not found")
         return
 
@@ -2157,15 +2254,13 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         )
 
         if not started:
-            with suppress(Exception):
-                await callback.message.delete()
-
-            error_text = "Не удалось запустить обмен. Причина не была сохранена."
+            action_status = ""
+            error_text = ""
             with suppress(Exception):
                 db = await get_db()
                 cur = await db.execute(
                     """
-                    SELECT error
+                    SELECT status, error
                       FROM p2p_order_actions
                      WHERE order_id = ? AND action = ?
                      LIMIT 1
@@ -2174,10 +2269,24 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
                 )
                 row = await cur.fetchone()
                 await cur.close()
-                if row and row[0]:
-                    error_text = str(row[0])
+                if row:
+                    action_status = str(row[0] or "").strip().lower()
+                    error_text = str(row[1] or "").strip()
 
-            await _broadcast_exchange_error(error_text)
+            # Если второй участник нажал «Готово» после первого, это не ошибка обмена.
+            # Просто убираем кнопки у второго уведомления и не показываем пользователю/админам ложную ошибку.
+            if action_status in {"claimed", "sent"} and not error_text:
+                with suppress(Exception):
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                with suppress(Exception):
+                    await callback.bot.send_message(
+                        operator_id,
+                        f"ℹ️ Обмен по заявке №<b>{real_order_id}</b> уже запущен другим участником.",
+                        parse_mode="HTML",
+                    )
+                return
+
+            await _broadcast_exchange_error(error_text or "Не удалось запустить обмен. Причина не была сохранена.")
             return
 
         await _remember_order_ui_message(int(real_order_id), callback.message.chat.id, callback.message.message_id)
@@ -2207,10 +2316,6 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
 
     except Exception as e:
         logger.exception("handle_ff_ready failed for order_id=%s", real_order_id)
-
-        with suppress(Exception):
-            await callback.message.delete()
-
         await _broadcast_exchange_error(str(e))
 
 
@@ -2220,9 +2325,9 @@ async def handle_finish_order(callback: types.CallbackQuery) -> None:
 
     operator_id = int(callback.from_user.id)
     operator = await get_user(operator_id)
-    if not operator or operator.get("role") not in ("Operator", "Admin", "MasterCard"):
+    if not operator or operator.get("role") not in ("Operator", "Admin"):
         with suppress(Exception):
-            await callback.bot.send_message(operator_id, "⚠️ Недостаточно прав для завершения заявки.")
+            await callback.bot.send_message(operator_id, "⚠️ Завершение заявки доступно только администратору/оператору.")
         return
 
     parts = (callback.data or "").split(":")
@@ -2363,6 +2468,17 @@ async def handle_finish_order_link(message: types.Message) -> None:
             operator_id=int(operator_id),
         )
         return
+
+    # Важно для связки бота и Mastercard-кабинета:
+    # ручное завершение через кнопку «Завершить» тоже должно засчитывать
+    # успешное использование VidraPay-карты. Иначе баланс в кабинете меняется
+    # по completed-заявке, а история/повторный «проверенный банк» и часть
+    # ограничений VidraPay могут не видеть факт успешной сделки.
+    with suppress(Exception):
+        refreshed_for_usage = None
+        from db.p2p import get_order_by_id
+        refreshed_for_usage = await get_order_by_id(int(db_order_id))
+        await _record_successful_vidrapay_card_usage(refreshed_for_usage or p2p)
 
     with suppress(Exception):
         from db.p2p import mark_p2p_action_sent
@@ -2530,6 +2646,16 @@ async def handle_finish_order_link(message: types.Message) -> None:
                 message.bot,
                 msg,
             )
+
+            mastercard_owner_id = await _get_mastercard_owner_id_for_order(current)
+            if mastercard_owner_id:
+                with suppress(Exception):
+                    await message.bot.send_message(
+                        int(mastercard_owner_id),
+                        msg,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
 
             with suppress(Exception):
                 from db.p2p import mark_p2p_action_sent
