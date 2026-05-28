@@ -22,7 +22,6 @@ from db.cards import (
 from db.p2p import get_completed_orders_by_master
 from db.users import get_user
 
-
 router = APIRouter(prefix="/mastercard", tags=["mastercard-web"])
 
 DEFAULT_MIN_AMOUNT_RUB = 1200
@@ -212,14 +211,14 @@ async def _ensure_mastercard_web_tables() -> None:
 
 
 async def _log_card_audit(
-    *,
-    owner_id: int,
-    card_id: int,
-    action: str,
-    title: str,
-    details: str = "",
-    amount: float = 0.0,
-    diff: float = 0.0,
+        *,
+        owner_id: int,
+        card_id: int,
+        action: str,
+        title: str,
+        details: str = "",
+        amount: float = 0.0,
+        diff: float = 0.0,
 ) -> None:
     try:
         await _ensure_mastercard_web_tables()
@@ -288,10 +287,12 @@ def _limit_state_for_card(card: dict[str, Any]) -> tuple[bool, str, str]:
     daily_limit = float(card.get("daily_limit_rub") or 0.0)
 
     if transfer_limit > 0 and today_count >= transfer_limit:
-        return True, f"Лимит переводов за сутки: {today_count}/{transfer_limit} шт.", next_midnight.strftime("%d.%m %H:%M")
+        return True, f"Лимит переводов за сутки: {today_count}/{transfer_limit} шт.", next_midnight.strftime(
+            "%d.%m %H:%M")
 
     if daily_limit > 0 and today_sum >= daily_limit:
-        return True, f"Дневной лимит суммы: {_fmt_money(today_sum)} из {_fmt_money(daily_limit)}", next_midnight.strftime("%d.%m %H:%M")
+        return True, f"Дневной лимит суммы: {_fmt_money(today_sum)} из {_fmt_money(daily_limit)}", next_midnight.strftime(
+            "%d.%m %H:%M")
 
     last_done = card.get("_last_completed_nsk")
     pause_minutes = int(card.get("transfer_pause_minutes") or 0)
@@ -410,7 +411,87 @@ async def _render_access_denied() -> HTMLResponse:
             .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}
             .card{max-width:360px;background:#101010;border:1px solid rgba(255,255,255,.09);border-radius:24px;padding:24px;text-align:center}
             .bad{color:#d6b35f;font-size:34px}.muted{color:#a9acb4;line-height:1.45}
-          </style>
+
+
+    /* Android Chrome-safe version: brighter surfaces, no fragile blur, stable rows. */
+    html.is-android body{{background:#000!important;color:#f7f4ec!important}}
+    html.is-android .page{{min-height:100vh!important;min-height:100dvh!important;padding:10px 10px 24px!important}}
+    html.is-android .shell{{max-width:540px}}
+    html.is-android .panel{{background:#111217!important;border-color:rgba(255,255,255,.24)!important;box-shadow:none!important}}
+    html.is-android .nav{{background:#111217!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;border-color:rgba(255,255,255,.22)!important}}
+    html.is-android .nav-btn{{background:#1d1e25!important;border-color:rgba(255,255,255,.20)!important;color:#dedfe4!important}}
+    html.is-android .nav-btn.active{{background:#2a2417!important;border-color:rgba(214,179,95,.48)!important;color:#e7c66c!important}}
+    html.is-android .card-slide{{background:linear-gradient(145deg,#23242c,#15161c)!important;border-color:rgba(255,255,255,.26)!important;box-shadow:none!important}}
+    html.is-android .card-slide::before{{opacity:.75}}
+    html.is-android .tile,
+    html.is-android .form-box,
+    html.is-android .edit-card,
+    html.is-android .stat-block,
+    html.is-android .order-card,
+    html.is-android .log-card{{background:#171820!important;border-color:rgba(255,255,255,.24)!important;box-shadow:none!important}}
+    html.is-android .quick-stat,
+    html.is-android .stat-card,
+    html.is-android .orders-mini,
+    html.is-android .limit-chip,
+    html.is-android .order-details{{background:#202129!important;border-color:rgba(255,255,255,.18)!important}}
+    html.is-android input{{background:#0b0c10!important;border-color:rgba(255,255,255,.24)!important;color:#fff!important}}
+    html.is-android label,
+    html.is-android .stat-label,
+    html.is-android .quick-label,
+    html.is-android .orders-mini-label,
+    html.is-android .limit-label{{color:#9fa3ad!important}}
+    html.is-android .section-note,
+    html.is-android .subtitle,
+    html.is-android .order-meta,
+    html.is-android .log-text{{color:#b6b9c1!important}}
+    html.is-android .slide-line{{display:grid!important;grid-template-columns:auto minmax(0,1fr)!important;align-items:center!important;gap:12px!important}}
+    html.is-android .slide-line b{{max-width:100%!important;text-align:right!important;white-space:normal!important;word-break:break-word!important}}
+    html.is-android .slide-limits{{gap:9px!important}}
+    html.is-android .slide-bottom{{display:grid!important;grid-template-columns:1fr!important;gap:12px!important;align-items:stretch!important}}
+    html.is-android .slide-actions{{width:100%!important;min-width:0!important;grid-template-columns:1fr 1fr!important}}
+    html.is-android .slide-action{{min-height:44px!important}}
+    html.is-android .slide-balance{{display:flex!important;align-items:flex-end!important;justify-content:space-between!important;gap:10px!important}}
+    html.is-android .cards-carousel{{grid-auto-columns:92%!important}}
+    html.is-android .cards-grid{{grid-template-columns:1fr!important}}
+    html.is-android .tile{{min-height:0!important}}
+    html.is-android .tile-row{{align-items:flex-start!important}}
+    html.is-android .modal-backdrop{{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(0,0,0,.84)!important}}
+    html.is-android .modal-box{{background:#14151b!important;border-color:rgba(255,255,255,.26)!important;max-height:90vh!important}}
+    html.is-android .modal-head{{background:#14151b!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}}
+    html.is-android .top-balance b{{color:#f0cc70!important;text-shadow:0 0 14px rgba(214,179,95,.44)!important}}
+
+    @media (max-width: 430px){{
+      html.is-android .top{{align-items:flex-start!important}}
+      html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
+      html.is-android .title{{font-size:20px!important}}
+      html.is-android .subtitle{{font-size:11.5px!important}}
+      html.is-android .top-balance{{min-width:108px!important}}
+      html.is-android .top-balance b{{font-size:25px!important}}
+      html.is-android .panel{{border-radius:24px!important}}
+      html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
+      html.is-android .nav-btn{{min-height:40px!important;font-size:10.6px!important;border-radius:13px!important;padding:0 4px!important}}
+      html.is-android .tab{{padding:12px!important}}
+      html.is-android .section-head{{display:grid!important;grid-template-columns:1fr!important;gap:8px!important}}
+      html.is-android .head-actions{{width:100%!important}}
+      html.is-android .view-switch{{width:100%!important;min-width:0!important}}
+      html.is-android .view-switch-btn{{min-height:34px!important}}
+      html.is-android .card-slide{{padding:15px!important;border-radius:24px!important;min-height:0!important}}
+      html.is-android .slide-top{{display:grid!important;grid-template-columns:1fr auto!important}}
+      html.is-android .slide-bank{{font-size:19px!important}}
+      html.is-android .slide-icons{{gap:6px!important}}
+      html.is-android .eye-btn,
+      html.is-android .icon-btn{{width:31px!important;height:30px!important}}
+      html.is-android .slide-body{{margin-top:22px!important;font-size:13px!important}}
+      html.is-android .stat-grid,
+      html.is-android .orders-mini-stats,
+      html.is-android .quick-stats{{grid-template-columns:1fr 1fr!important;gap:8px!important}}
+      html.is-android .stat-value,
+      html.is-android .orders-mini-value,
+      html.is-android .quick-value{{font-size:17px!important}}
+      html.is-android .order-toggle{{grid-template-columns:minmax(0,1fr) auto!important}}
+    }}
+
+  </style>
         </head>
         <body><div class="wrap"><div class="card"><div class="bad">⛔</div><h2>Нет доступа</h2><p class="muted">Эта панель доступна только роли MasterCard.</p></div></div></body>
         </html>
@@ -427,13 +508,20 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>{_esc(title)}</title>
+  <script>
+    (function(){{
+      try {{
+        document.documentElement.classList.add(/Android/i.test(navigator.userAgent) ? "is-android" : "not-android");
+      }} catch(e) {{}}
+    }})();
+  </script>
   <style>
     :root {{
       --bg:#000000;
-      --card:#0b0b0d;
-      --card2:#111114;
-      --card3:#171719;
-      --line:rgba(255,255,255,.085);
+      --card:#14151a;
+      --card2:#191a20;
+      --card3:#202128;
+      --line:rgba(255,255,255,.20);
       --line2:rgba(214,179,95,.26);
       --text:#f6f3ea;
       --muted:#a9acb4;
@@ -458,43 +546,34 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .subtitle{{margin-top:5px;color:var(--muted);font-size:12.5px;line-height:1.25}}
     .top-balance{{
       flex:0 0 auto;
-      min-width:132px;
-      padding:8px 10px 9px;
-      border-radius:18px;
-      border:1px solid rgba(214,179,95,.42);
-      background:
-        radial-gradient(circle at 18% 0%, rgba(214,179,95,.30), transparent 45%),
-        linear-gradient(135deg, rgba(214,179,95,.18), rgba(255,255,255,.045));
-      box-shadow:
-        0 12px 34px rgba(214,179,95,.12),
-        0 14px 36px rgba(0,0,0,.36),
-        inset 0 1px 0 rgba(255,255,255,.06);
+      min-width:118px;
       text-align:right;
+      padding:0 1px 0 0;
     }}
     .top-balance span{{
       display:block;
-      margin-bottom:3px;
+      margin-bottom:4px;
       color:rgba(246,243,234,.62);
-      font-size:9.5px;
+      font-size:10px;
       line-height:1;
       font-weight:950;
       text-transform:uppercase;
-      letter-spacing:.45px;
+      letter-spacing:.42px;
       white-space:nowrap;
     }}
     .top-balance b{{
       display:block;
       color:var(--accent2);
-      font-size:24px;
-      line-height:1;
+      font-size:28px;
+      line-height:.96;
       font-weight:1000;
-      letter-spacing:-.65px;
+      letter-spacing:-.75px;
       white-space:nowrap;
-      text-shadow:0 0 20px rgba(214,179,95,.40);
+      text-shadow:0 0 18px rgba(214,179,95,.36);
     }}
-    .panel{{border:1px solid var(--line);border-radius:28px;background:#080809;box-shadow:0 22px 70px rgba(0,0,0,.55);overflow:hidden}}
-    .nav{{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:repeat(4,1fr);gap:7px;padding:10px;background:rgba(8,8,9,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}}
-    .nav-btn{{min-width:0;min-height:40px;border:1px solid var(--line);border-radius:15px;background:rgba(255,255,255,.035);color:var(--muted);font-size:11.5px;font-weight:950;line-height:1}}
+    .panel{{border:1px solid var(--line);border-radius:28px;background:#101116;box-shadow:0 18px 54px rgba(0,0,0,.42);overflow:hidden}}
+    .nav{{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;padding:10px;background:#101116;border-bottom:1px solid var(--line);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}
+    .nav-btn{{min-width:0;min-height:42px;border:1px solid rgba(255,255,255,.18);border-radius:15px;background:#1a1b21;color:#d1d3d8;font-size:11.5px;font-weight:950;line-height:1;display:flex;align-items:center;justify-content:center;text-align:center}}
     .nav-btn.active{{border-color:var(--line2);background:rgba(214,179,95,.13);color:var(--accent)}}
     .tab{{display:none;padding:14px}}
     .tab.active{{display:block}}
@@ -511,7 +590,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .view-switch-btn.active{{background:linear-gradient(135deg,#e1c46f,#caa24e);color:#171209;box-shadow:0 8px 18px rgba(214,179,95,.13)}}
     .cards-carousel{{display:grid;grid-auto-flow:column;grid-auto-columns:88%;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 14px;margin:0 -2px;scrollbar-width:none}}
     .cards-carousel::-webkit-scrollbar{{display:none}}
-    .card-slide{{scroll-snap-align:center;min-width:0;position:relative;min-height:205px;padding:17px;border-radius:28px;border:1px solid var(--line);background:linear-gradient(145deg,#141416,#080809);overflow:hidden;box-shadow:0 18px 44px rgba(0,0,0,.38)}}
+    .card-slide{{scroll-snap-align:center;min-width:0;position:relative;min-height:205px;padding:17px;border-radius:28px;border:1px solid rgba(255,255,255,.23);background:linear-gradient(145deg,#1f2027,#121318);overflow:hidden;box-shadow:0 16px 38px rgba(0,0,0,.30)}}
     .card-slide::before{{content:"";position:absolute;inset:-1px;background:radial-gradient(circle at 16% 0%,rgba(214,179,95,.18),transparent 42%);pointer-events:none}}
     .card-slide.off{{opacity:.66}}
     .slide-top,.slide-body,.slide-bottom{{position:relative}}
@@ -599,8 +678,8 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .split-actions{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}}
     .modal-backdrop{{position:fixed;inset:0;z-index:50;display:none;align-items:flex-end;justify-content:center;padding:12px;background:rgba(0,0,0,.72);backdrop-filter:blur(10px)}}
     .modal-backdrop.open{{display:flex}}
-    .modal-box{{width:100%;max-width:520px;max-height:88svh;overflow:auto;border:1px solid var(--line);border-radius:28px;background:#080809;box-shadow:0 30px 90px rgba(0,0,0,.78)}}
-    .modal-head{{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border-bottom:1px solid var(--line);background:rgba(8,8,9,.96);backdrop-filter:blur(10px)}}
+    .modal-box{{width:100%;max-width:520px;max-height:88dvh;overflow:auto;border:1px solid rgba(255,255,255,.22);border-radius:28px;background:#121318;box-shadow:0 28px 70px rgba(0,0,0,.70)}}
+    .modal-head{{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border-bottom:1px solid var(--line);background:#121318;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}
     .modal-title{{font-size:18px;font-weight:950;line-height:1.1}}
     .modal-close{{width:38px;height:38px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.045);color:var(--muted);font-size:20px;line-height:1}}
     .modal-content{{padding:14px}}
@@ -610,7 +689,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .withdraw-form.active{{display:block}}
     .withdraw-note{{color:var(--muted);font-size:12.5px;line-height:1.4;margin-bottom:10px}}
     .stats-only{{display:grid;gap:13px}}
-    .stat-block{{padding:13px;border-radius:22px;border:1px solid var(--line);background:linear-gradient(180deg,#101012,#080809)}}
+    .stat-block{{padding:13px;border-radius:22px;border:1px solid rgba(255,255,255,.15);background:linear-gradient(180deg,#16161a,#0d0d10)}}
     .stat-block-title{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;font-size:14px;font-weight:950;color:var(--text)}}
     .stat-block-badge{{padding:5px 8px;border-radius:999px;border:1px solid rgba(214,179,95,.18);background:rgba(214,179,95,.06);color:var(--accent);font-size:10px;font-weight:950;text-transform:uppercase;letter-spacing:.35px}}
     .stat-grid{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}
@@ -618,7 +697,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .stat-label{{color:var(--muted2);font-size:10px;font-weight:950;text-transform:uppercase;letter-spacing:.35px;line-height:1.15}}
     .stat-value{{margin-top:7px;font-size:19px;line-height:1.08;font-weight:950;color:var(--accent);overflow-wrap:anywhere}}
     .orders-list{{display:grid;gap:8px}}
-    .order-card{{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#101012,#09090a);overflow:hidden}}
+    .order-card{{border:1px solid rgba(255,255,255,.15);border-radius:18px;background:linear-gradient(180deg,#16161a,#0d0d10);overflow:hidden}}
     .order-toggle{{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 12px;border:0;background:transparent;color:var(--text);text-align:left}}
     .order-main{{min-width:0}}
     .order-title{{font-size:13.5px;line-height:1.15;font-weight:950;color:var(--text)}}
@@ -635,6 +714,38 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .orders-mini{{padding:10px;border-radius:17px;border:1px solid var(--line);background:rgba(255,255,255,.025)}}
     .orders-mini-label{{color:var(--muted2);font-size:9.5px;font-weight:950;text-transform:uppercase;letter-spacing:.32px}}
     .orders-mini-value{{margin-top:5px;color:var(--accent);font-size:18px;font-weight:950;line-height:1}}
+    @media (max-width: 520px) {{
+      html{{-webkit-text-size-adjust:100%;text-size-adjust:100%}}
+      .page{{min-height:100vh;min-height:100dvh;padding:10px 10px 22px}}
+      .top{{align-items:flex-start;gap:10px;padding:8px 1px 12px}}
+      .logo{{width:44px;height:44px;flex-basis:44px;border-radius:15px}}
+      .title{{font-size:21px}}
+      .subtitle{{font-size:12px}}
+      .top-balance{{min-width:112px;padding-top:1px}}
+      .top-balance span{{font-size:9.2px;margin-bottom:5px;color:rgba(246,243,234,.68)}}
+      .top-balance b{{font-size:27px;color:#e6c76e;text-shadow:0 0 16px rgba(214,179,95,.42)}}
+      .panel{{border-color:rgba(255,255,255,.16);background:#0b0b0d}}
+      .tab{{padding:13px}}
+      .section-head{{align-items:center;gap:8px}}
+      .section-title{{font-size:19px}}
+      .cards-carousel{{grid-auto-columns:90%;gap:11px;padding-bottom:13px}}
+      .card-slide{{border-color:rgba(255,255,255,.17);background:linear-gradient(145deg,#19191d,#0d0d10)}}
+      .slide-line{{align-items:flex-start}}
+      .slide-line span{{min-width:0}}
+      .slide-line b{{max-width:62%;text-align:right;white-space:normal;word-break:break-word}}
+      .slide-bottom{{align-items:flex-end}}
+      .slide-actions{{min-width:150px}}
+      .tile,.form-box,.edit-card,.stat-block,.order-card,.log-card{{border-color:rgba(255,255,255,.22);background:linear-gradient(180deg,#1c1d24,#111217)}}
+      input{{font-size:16px;min-height:47px;background:#050506;border-color:rgba(255,255,255,.16)}}
+      label{{font-size:11px}}
+      .primary,.ghost,.danger-btn,.slide-action{{min-height:43px;display:flex;align-items:center;justify-content:center;text-align:center}}
+      .stat-grid,.orders-mini-stats{{gap:8px}}
+      .stat-card,.orders-mini{{min-width:0;padding:11px 9px}}
+      .stat-value,.orders-mini-value{{font-size:17px;line-height:1.1}}
+      .order-toggle{{grid-template-columns:minmax(0,1fr) minmax(86px,auto);padding:12px}}
+      .order-side{{min-width:86px}}
+    }}
+
     @media(max-width:390px){{
       .page{{padding:8px 8px 20px}}
       .nav{{gap:6px;padding:9px}}
@@ -650,10 +761,90 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .section-head{{align-items:center}}
       .view-switch{{min-width:126px}}
       .view-switch-btn{{font-size:11px;padding:0 7px}}
-      .top-balance{{min-width:118px;padding:7px 9px;border-radius:16px}}
-      .top-balance span{{font-size:8.7px}}
-      .top-balance b{{font-size:21px}}
+      .top-balance{{min-width:104px}}
+      .top-balance span{{font-size:8.5px}}
+      .top-balance b{{font-size:24px}}
     }}
+
+
+    /* Android Chrome-safe version: brighter surfaces, no fragile blur, stable rows. */
+    html.is-android body{{background:#000!important;color:#f7f4ec!important}}
+    html.is-android .page{{min-height:100vh!important;min-height:100dvh!important;padding:10px 10px 24px!important}}
+    html.is-android .shell{{max-width:540px}}
+    html.is-android .panel{{background:#111217!important;border-color:rgba(255,255,255,.24)!important;box-shadow:none!important}}
+    html.is-android .nav{{background:#111217!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;border-color:rgba(255,255,255,.22)!important}}
+    html.is-android .nav-btn{{background:#1d1e25!important;border-color:rgba(255,255,255,.20)!important;color:#dedfe4!important}}
+    html.is-android .nav-btn.active{{background:#2a2417!important;border-color:rgba(214,179,95,.48)!important;color:#e7c66c!important}}
+    html.is-android .card-slide{{background:linear-gradient(145deg,#23242c,#15161c)!important;border-color:rgba(255,255,255,.26)!important;box-shadow:none!important}}
+    html.is-android .card-slide::before{{opacity:.75}}
+    html.is-android .tile,
+    html.is-android .form-box,
+    html.is-android .edit-card,
+    html.is-android .stat-block,
+    html.is-android .order-card,
+    html.is-android .log-card{{background:#171820!important;border-color:rgba(255,255,255,.24)!important;box-shadow:none!important}}
+    html.is-android .quick-stat,
+    html.is-android .stat-card,
+    html.is-android .orders-mini,
+    html.is-android .limit-chip,
+    html.is-android .order-details{{background:#202129!important;border-color:rgba(255,255,255,.18)!important}}
+    html.is-android input{{background:#0b0c10!important;border-color:rgba(255,255,255,.24)!important;color:#fff!important}}
+    html.is-android label,
+    html.is-android .stat-label,
+    html.is-android .quick-label,
+    html.is-android .orders-mini-label,
+    html.is-android .limit-label{{color:#9fa3ad!important}}
+    html.is-android .section-note,
+    html.is-android .subtitle,
+    html.is-android .order-meta,
+    html.is-android .log-text{{color:#b6b9c1!important}}
+    html.is-android .slide-line{{display:grid!important;grid-template-columns:auto minmax(0,1fr)!important;align-items:center!important;gap:12px!important}}
+    html.is-android .slide-line b{{max-width:100%!important;text-align:right!important;white-space:normal!important;word-break:break-word!important}}
+    html.is-android .slide-limits{{gap:9px!important}}
+    html.is-android .slide-bottom{{display:grid!important;grid-template-columns:1fr!important;gap:12px!important;align-items:stretch!important}}
+    html.is-android .slide-actions{{width:100%!important;min-width:0!important;grid-template-columns:1fr 1fr!important}}
+    html.is-android .slide-action{{min-height:44px!important}}
+    html.is-android .slide-balance{{display:flex!important;align-items:flex-end!important;justify-content:space-between!important;gap:10px!important}}
+    html.is-android .cards-carousel{{grid-auto-columns:92%!important}}
+    html.is-android .cards-grid{{grid-template-columns:1fr!important}}
+    html.is-android .tile{{min-height:0!important}}
+    html.is-android .tile-row{{align-items:flex-start!important}}
+    html.is-android .modal-backdrop{{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(0,0,0,.84)!important}}
+    html.is-android .modal-box{{background:#14151b!important;border-color:rgba(255,255,255,.26)!important;max-height:90vh!important}}
+    html.is-android .modal-head{{background:#14151b!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}}
+    html.is-android .top-balance b{{color:#f0cc70!important;text-shadow:0 0 14px rgba(214,179,95,.44)!important}}
+
+    @media (max-width: 430px){{
+      html.is-android .top{{align-items:flex-start!important}}
+      html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
+      html.is-android .title{{font-size:20px!important}}
+      html.is-android .subtitle{{font-size:11.5px!important}}
+      html.is-android .top-balance{{min-width:108px!important}}
+      html.is-android .top-balance b{{font-size:25px!important}}
+      html.is-android .panel{{border-radius:24px!important}}
+      html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
+      html.is-android .nav-btn{{min-height:40px!important;font-size:10.6px!important;border-radius:13px!important;padding:0 4px!important}}
+      html.is-android .tab{{padding:12px!important}}
+      html.is-android .section-head{{display:grid!important;grid-template-columns:1fr!important;gap:8px!important}}
+      html.is-android .head-actions{{width:100%!important}}
+      html.is-android .view-switch{{width:100%!important;min-width:0!important}}
+      html.is-android .view-switch-btn{{min-height:34px!important}}
+      html.is-android .card-slide{{padding:15px!important;border-radius:24px!important;min-height:0!important}}
+      html.is-android .slide-top{{display:grid!important;grid-template-columns:1fr auto!important}}
+      html.is-android .slide-bank{{font-size:19px!important}}
+      html.is-android .slide-icons{{gap:6px!important}}
+      html.is-android .eye-btn,
+      html.is-android .icon-btn{{width:31px!important;height:30px!important}}
+      html.is-android .slide-body{{margin-top:22px!important;font-size:13px!important}}
+      html.is-android .stat-grid,
+      html.is-android .orders-mini-stats,
+      html.is-android .quick-stats{{grid-template-columns:1fr 1fr!important;gap:8px!important}}
+      html.is-android .stat-value,
+      html.is-android .orders-mini-value,
+      html.is-android .quick-value{{font-size:17px!important}}
+      html.is-android .order-toggle{{grid-template-columns:minmax(0,1fr) auto!important}}
+    }}
+
   </style>
 </head>
 <body>
@@ -1146,7 +1337,6 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
         modal_edit_html = ""
         withdraw_modal_html = ""
 
-
     if completed_orders:
         order_rows_html = ""
         for order in completed_orders[:30]:
@@ -1372,16 +1562,16 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
 
 @router.post("/card/add")
 async def mastercard_add_card(
-    user_id: int = Form(...),
-    bank_name: str = Form(...),
-    sbp_phone: str = Form(""),
-    card_number: str = Form(""),
-    min_amount_rub: str = Form(""),
-    max_amount_rub: str = Form(""),
-    daily_limit_rub: str = Form(""),
-    daily_transfer_limit: str = Form(""),
-    transfer_pause_minutes: str = Form(""),
-    current_balance: str = Form(""),
+        user_id: int = Form(...),
+        bank_name: str = Form(...),
+        sbp_phone: str = Form(""),
+        card_number: str = Form(""),
+        min_amount_rub: str = Form(""),
+        max_amount_rub: str = Form(""),
+        daily_limit_rub: str = Form(""),
+        daily_transfer_limit: str = Form(""),
+        transfer_pause_minutes: str = Form(""),
+        current_balance: str = Form(""),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1402,17 +1592,17 @@ async def mastercard_add_card(
 
 @router.post("/card/update")
 async def mastercard_update_card(
-    user_id: int = Form(...),
-    card_id: int = Form(...),
-    bank_name: str = Form(...),
-    sbp_phone: str = Form(""),
-    card_number: str = Form(""),
-    min_amount_rub: str = Form(""),
-    max_amount_rub: str = Form(""),
-    daily_limit_rub: str = Form(""),
-    daily_transfer_limit: str = Form(""),
-    transfer_pause_minutes: str = Form(""),
-    current_balance: str = Form(""),
+        user_id: int = Form(...),
+        card_id: int = Form(...),
+        bank_name: str = Form(...),
+        sbp_phone: str = Form(""),
+        card_number: str = Form(""),
+        min_amount_rub: str = Form(""),
+        max_amount_rub: str = Form(""),
+        daily_limit_rub: str = Form(""),
+        daily_transfer_limit: str = Form(""),
+        transfer_pause_minutes: str = Form(""),
+        current_balance: str = Form(""),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1445,8 +1635,8 @@ async def mastercard_update_card(
 
 @router.post("/card/toggle")
 async def mastercard_toggle_card(
-    user_id: int = Form(...),
-    card_id: int = Form(...),
+        user_id: int = Form(...),
+        card_id: int = Form(...),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1490,8 +1680,8 @@ async def mastercard_toggle_card(
 
 @router.post("/card/delete")
 async def mastercard_delete_card(
-    user_id: int = Form(...),
-    card_id: int = Form(...),
+        user_id: int = Form(...),
+        card_id: int = Form(...),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
@@ -1509,9 +1699,9 @@ async def mastercard_delete_card(
 
 @router.post("/card/withdraw")
 async def mastercard_withdraw_card(
-    user_id: int = Form(...),
-    card_id: int = Form(...),
-    amount: str = Form(...),
+        user_id: int = Form(...),
+        card_id: int = Form(...),
+        amount: str = Form(...),
 ):
     if not await _is_mastercard_user(user_id):
         return _redirect(user_id)
