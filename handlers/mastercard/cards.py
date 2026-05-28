@@ -20,6 +20,7 @@ from db.cards import (
     update_card,
 )
 from db.p2p import get_completed_p2p_orders_by_card
+from db.users import get_all_users, get_user
 from handlers.mastercard.menu import is_mastercard_user, mastercard_main_keyboard
 
 
@@ -83,12 +84,14 @@ LIMIT_FIELD_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _main_cards_kb() -> InlineKeyboardMarkup:
+def _main_cards_kb(admin_mode: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("➕ Добавить", callback_data="mc_card_add"),
         InlineKeyboardButton("✏️ Редактировать", callback_data="mc_card_edit_select"),
     )
+    if admin_mode:
+        kb.add(InlineKeyboardButton("⬅️ Все кабинеты", callback_data="mc_admin_back_to_owners"))
     return kb
 
 
@@ -290,21 +293,163 @@ async def _get_owned_card(owner_id: int, card_id: int) -> Optional[Dict[str, Any
     return card
 
 
+async def _is_admin_user(user_id: int) -> bool:
+    user = await get_user(user_id)
+    role = str((user or {}).get("role") or "").strip().lower()
+    return role == "admin"
+
+
+async def _get_effective_owner_id(user_id: int, state: FSMContext) -> Optional[int]:
+    data = await state.get_data()
+    owner_id_raw = data.get("mc_admin_owner_id")
+
+    if owner_id_raw is not None and await _is_admin_user(user_id):
+        try:
+            return int(owner_id_raw)
+        except (TypeError, ValueError):
+            return None
+
+    if await is_mastercard_user(user_id):
+        return int(user_id)
+
+    return None
+
+
+async def _restore_admin_owner_if_needed(state: FSMContext, actor_id: int, owner_id: int) -> None:
+    if int(actor_id) != int(owner_id) and await _is_admin_user(actor_id):
+        await state.update_data(mc_admin_owner_id=int(owner_id))
+
+
+def _display_mastercard_user(user: Dict[str, Any]) -> str:
+    username = (user.get("username") or "").strip()
+    telegram_id = user.get("telegram_id")
+    if username:
+        return f"@{username}"
+    return f"ID {telegram_id}"
+
+
+async def _compose_admin_owners_text_and_kb() -> tuple[str, InlineKeyboardMarkup]:
+    users = await get_all_users()
+    owners = [
+        u for u in users
+        if str(u.get("role") or "").strip().lower() == "mastercard"
+    ]
+
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    if not owners:
+        return "💳 Кабинеты MasterCard\n\nПользователей с ролью MasterCard пока нет.", kb
+
+    lines: List[str] = [
+        "💳 Кабинеты MasterCard",
+        "",
+        "Выберите кабинет, в который нужно зайти:",
+    ]
+
+    for owner in owners:
+        owner_id = int(owner["telegram_id"])
+        cards = await get_cards_by_owner(owner_id)
+        active_count = sum(1 for c in cards if c.get("is_active", True))
+        title = _display_mastercard_user(owner)
+        lines.append(f"• {title} — карт: {len(cards)}, активных: {active_count}")
+        kb.add(
+            InlineKeyboardButton(
+                f"Открыть {title} ({len(cards)})",
+                callback_data=f"mc_admin_open:{owner_id}",
+            )
+        )
+
+    return "\n".join(lines), kb
+
+
+async def _send_owner_cards_screen(
+    bot: Bot,
+    chat_id: int,
+    owner_id: int,
+    admin_mode: bool = False,
+) -> None:
+    cards = await get_cards_by_owner(owner_id)
+    text = await _compose_list_text(cards)
+
+    if admin_mode:
+        owner = await get_user(owner_id)
+        title = _display_mastercard_user(owner or {"telegram_id": owner_id})
+        text = f"👑 Кабинет MasterCard: {title}\nID: {owner_id}\n\n{text}"
+
+    await bot.send_message(
+        chat_id,
+        text,
+        reply_markup=_main_cards_kb(admin_mode=admin_mode),
+    )
+
+
+async def mc_admin_back_to_owners(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not await _is_admin_user(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.finish()
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    text, kb = await _compose_admin_owners_text_and_kb()
+    await callback.bot.send_message(callback.from_user.id, text, reply_markup=kb)
+
+
+async def mc_admin_open_owner(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not await _is_admin_user(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        owner_id = int((callback.data or "").split(":", 1)[1])
+    except (IndexError, ValueError, TypeError):
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+
+    owner = await get_user(owner_id)
+    if not owner or str(owner.get("role") or "").strip().lower() != "mastercard":
+        await callback.answer("Кабинет не найден", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.finish()
+    await state.update_data(mc_admin_owner_id=owner_id)
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await _send_owner_cards_screen(
+        bot=callback.bot,
+        chat_id=callback.from_user.id,
+        owner_id=owner_id,
+        admin_mode=True,
+    )
+
+
 async def mastercard_cards_menu(message: types.Message, state: FSMContext) -> None:
     if not await is_mastercard_user(message.from_user.id):
         await message.answer("⛔ У вас нет доступа.")
         return
 
     await state.finish()
-
-    cards = await get_cards_by_owner(message.from_user.id)
-    text = await _compose_list_text(cards)
-
-    await message.answer(text, reply_markup=_main_cards_kb())
+    await _send_owner_cards_screen(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        owner_id=message.from_user.id,
+        admin_mode=False,
+    )
 
 
 async def mc_card_add_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -316,6 +461,7 @@ async def mc_card_add_start(callback: types.CallbackQuery, state: FSMContext) ->
         pass
 
     await state.finish()
+    await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
 
     await callback.bot.send_message(
         callback.from_user.id,
@@ -326,7 +472,8 @@ async def mc_card_add_start(callback: types.CallbackQuery, state: FSMContext) ->
 
 
 async def mc_card_add_bank(message: types.Message, state: FSMContext) -> None:
-    if not await is_mastercard_user(message.from_user.id):
+    owner_id = await _get_effective_owner_id(message.from_user.id, state)
+    if not owner_id:
         await state.finish()
         return
 
@@ -336,13 +483,15 @@ async def mc_card_add_bank(message: types.Message, state: FSMContext) -> None:
         return
 
     await state.update_data(bank=bank)
+    await _restore_admin_owner_if_needed(state, message.from_user.id, owner_id)
 
     await message.answer("Введите телефон для СБП (+7XXXXXXXXXX) или «пропустить»:")
     await MasterCardAddStates.waiting_sbp.set()
 
 
 async def mc_card_add_sbp(message: types.Message, state: FSMContext) -> None:
-    if not await is_mastercard_user(message.from_user.id):
+    owner_id = await _get_effective_owner_id(message.from_user.id, state)
+    if not owner_id:
         await state.finish()
         return
 
@@ -356,13 +505,15 @@ async def mc_card_add_sbp(message: types.Message, state: FSMContext) -> None:
         sbp = text
 
     await state.update_data(sbp=sbp)
+    await _restore_admin_owner_if_needed(state, message.from_user.id, owner_id)
 
     await message.answer("Введите 16-значный номер карты или «пропустить»:")
     await MasterCardAddStates.waiting_number.set()
 
 
 async def mc_card_add_number(message: types.Message, state: FSMContext) -> None:
-    if not await is_mastercard_user(message.from_user.id):
+    owner_id = await _get_effective_owner_id(message.from_user.id, state)
+    if not owner_id:
         await state.finish()
         return
 
@@ -381,7 +532,7 @@ async def mc_card_add_number(message: types.Message, state: FSMContext) -> None:
         return
 
     await add_card(
-        owner_id=message.from_user.id,
+        owner_id=owner_id,
         bank_name=data.get("bank", ""),
         sbp_phone=data.get("sbp"),
         card_number=num,
@@ -392,6 +543,7 @@ async def mc_card_add_number(message: types.Message, state: FSMContext) -> None:
         transfer_pause_minutes=DEFAULT_TRANSFER_PAUSE_MINUTES,
     )
 
+    admin_mode = int(owner_id) != int(message.from_user.id) and await _is_admin_user(message.from_user.id)
     await state.finish()
 
     await message.answer(
@@ -402,12 +554,17 @@ async def mc_card_add_number(message: types.Message, state: FSMContext) -> None:
         f"• Дневной лимит: {DEFAULT_DAILY_LIMIT_RUB} ₽\n"
         f"• Переводов в день: {DEFAULT_DAILY_TRANSFER_LIMIT}\n"
         f"• Пауза: {DEFAULT_TRANSFER_PAUSE_MINUTES} мин.",
-        reply_markup=mastercard_main_keyboard(),
+        reply_markup=None if admin_mode else mastercard_main_keyboard(),
     )
+
+    if admin_mode:
+        await state.update_data(mc_admin_owner_id=owner_id)
+        await _send_owner_cards_screen(message.bot, message.chat.id, owner_id, admin_mode=True)
 
 
 async def mc_card_browse_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -418,29 +575,31 @@ async def mc_card_browse_start(callback: types.CallbackQuery, state: FSMContext)
     except Exception:
         pass
 
-    cards = await get_cards_by_owner(callback.from_user.id)
+    cards = await get_cards_by_owner(owner_id)
     if not cards:
         await callback.bot.send_message(
             callback.from_user.id,
             "ℹ️ Нет карт.",
-            reply_markup=mastercard_main_keyboard(),
+            reply_markup=None if int(owner_id) != int(callback.from_user.id) else mastercard_main_keyboard(),
         )
         return
 
     await state.update_data(cards=cards, idx=0)
+    await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
     await _show_card(callback.bot, callback.from_user.id, cards[0])
     await MasterCardBrowseStates.browsing.set()
 
 
 async def mc_card_browse_prev(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     await callback.answer()
 
     data = await state.get_data()
-    cards = data.get("cards") or await get_cards_by_owner(callback.from_user.id)
+    cards = data.get("cards") or await get_cards_by_owner(owner_id)
 
     if not cards:
         await callback.message.edit_text("ℹ️ Нет карт.")
@@ -449,18 +608,20 @@ async def mc_card_browse_prev(callback: types.CallbackQuery, state: FSMContext) 
 
     idx = (int(data.get("idx", 0)) - 1) % len(cards)
     await state.update_data(cards=cards, idx=idx)
+    await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
     await _edit_card(callback.message, cards[idx])
 
 
 async def mc_card_browse_next(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     await callback.answer()
 
     data = await state.get_data()
-    cards = data.get("cards") or await get_cards_by_owner(callback.from_user.id)
+    cards = data.get("cards") or await get_cards_by_owner(owner_id)
 
     if not cards:
         await callback.message.edit_text("ℹ️ Нет карт.")
@@ -469,13 +630,17 @@ async def mc_card_browse_next(callback: types.CallbackQuery, state: FSMContext) 
 
     idx = (int(data.get("idx", 0)) + 1) % len(cards)
     await state.update_data(cards=cards, idx=idx)
+    await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
     await _edit_card(callback.message, cards[idx])
 
 
 async def mc_card_back_to_list(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
+    admin_mode = int(owner_id) != int(callback.from_user.id) and await _is_admin_user(callback.from_user.id)
 
     await callback.answer()
 
@@ -485,19 +650,20 @@ async def mc_card_back_to_list(callback: types.CallbackQuery, state: FSMContext)
         pass
 
     await state.finish()
+    if admin_mode:
+        await state.update_data(mc_admin_owner_id=owner_id)
 
-    cards = await get_cards_by_owner(callback.from_user.id)
-    text = await _compose_list_text(cards)
-
-    await callback.bot.send_message(
-        callback.from_user.id,
-        text,
-        reply_markup=_main_cards_kb(),
+    await _send_owner_cards_screen(
+        bot=callback.bot,
+        chat_id=callback.from_user.id,
+        owner_id=owner_id,
+        admin_mode=admin_mode,
     )
 
 
 async def mc_card_toggle(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -507,7 +673,7 @@ async def mc_card_toggle(callback: types.CallbackQuery, state: FSMContext) -> No
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
-    card = await _get_owned_card(callback.from_user.id, card_id)
+    card = await _get_owned_card(owner_id, card_id)
     if not card:
         await callback.answer("Карта не найдена", show_alert=True)
         return
@@ -516,7 +682,7 @@ async def mc_card_toggle(callback: types.CallbackQuery, state: FSMContext) -> No
 
     await set_card_active(
         card_id=card_id,
-        owner_id=callback.from_user.id,
+        owner_id=owner_id,
         is_active=new_status,
     )
 
@@ -532,10 +698,12 @@ async def mc_card_toggle(callback: types.CallbackQuery, state: FSMContext) -> No
             for c in cards
         ]
         await state.update_data(cards=refreshed_cards)
+        await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
 
 
 async def mc_card_delete(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -545,12 +713,12 @@ async def mc_card_delete(callback: types.CallbackQuery, state: FSMContext) -> No
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
-    card = await _get_owned_card(callback.from_user.id, card_id)
+    card = await _get_owned_card(owner_id, card_id)
     if not card:
         await callback.answer("Карта не найдена", show_alert=True)
         return
 
-    await delete_card(card_id=card_id, owner_id=callback.from_user.id)
+    await delete_card(card_id=card_id, owner_id=owner_id)
     await callback.answer("Удалено")
 
     try:
@@ -558,20 +726,22 @@ async def mc_card_delete(callback: types.CallbackQuery, state: FSMContext) -> No
     except Exception:
         pass
 
+    admin_mode = int(owner_id) != int(callback.from_user.id) and await _is_admin_user(callback.from_user.id)
     await state.finish()
+    if admin_mode:
+        await state.update_data(mc_admin_owner_id=owner_id)
 
-    cards = await get_cards_by_owner(callback.from_user.id)
-    text = await _compose_list_text(cards)
-
-    await callback.bot.send_message(
-        callback.from_user.id,
-        text,
-        reply_markup=_main_cards_kb(),
+    await _send_owner_cards_screen(
+        bot=callback.bot,
+        chat_id=callback.from_user.id,
+        owner_id=owner_id,
+        admin_mode=admin_mode,
     )
 
 
 async def mc_limit_edit_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not await is_mastercard_user(callback.from_user.id):
+    owner_id = await _get_effective_owner_id(callback.from_user.id, state)
+    if not owner_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -592,7 +762,7 @@ async def mc_limit_edit_start(callback: types.CallbackQuery, state: FSMContext) 
         await callback.answer("Ошибка ограничения", show_alert=True)
         return
 
-    card = await _get_owned_card(callback.from_user.id, card_id)
+    card = await _get_owned_card(owner_id, card_id)
     if not card:
         await callback.answer("Карта не найдена", show_alert=True)
         return
@@ -600,6 +770,7 @@ async def mc_limit_edit_start(callback: types.CallbackQuery, state: FSMContext) 
     await callback.answer()
     await state.finish()
     await state.update_data(mc_limit_card_id=card_id, mc_limit_key=limit_key)
+    await _restore_admin_owner_if_needed(state, callback.from_user.id, owner_id)
 
     current_value = card.get(config["field"])
     await callback.bot.send_message(
@@ -613,7 +784,8 @@ async def mc_limit_edit_start(callback: types.CallbackQuery, state: FSMContext) 
 
 
 async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> None:
-    if not await is_mastercard_user(message.from_user.id):
+    owner_id = await _get_effective_owner_id(message.from_user.id, state)
+    if not owner_id:
         await state.finish()
         return
 
@@ -626,16 +798,23 @@ async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> N
 
     limit_key = str(data.get("mc_limit_key") or "")
     config = LIMIT_FIELD_CONFIG.get(limit_key)
+    admin_mode = int(owner_id) != int(message.from_user.id) and await _is_admin_user(message.from_user.id)
 
     if not card_id or not config:
         await state.finish()
-        await message.answer("⚠️ Сессия редактирования не найдена.", reply_markup=mastercard_main_keyboard())
+        await message.answer(
+            "⚠️ Сессия редактирования не найдена.",
+            reply_markup=None if admin_mode else mastercard_main_keyboard(),
+        )
         return
 
-    card = await _get_owned_card(message.from_user.id, card_id)
+    card = await _get_owned_card(owner_id, card_id)
     if not card:
         await state.finish()
-        await message.answer("⚠️ Карта не найдена.", reply_markup=mastercard_main_keyboard())
+        await message.answer(
+            "⚠️ Карта не найдена.",
+            reply_markup=None if admin_mode else mastercard_main_keyboard(),
+        )
         return
 
     raw = message.text or ""
@@ -649,7 +828,6 @@ async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> N
         await message.answer("⚠️ Введите положительное число.")
         return
 
-    # Проверяем связку min/max.
     if limit_key == "min":
         max_amount = card.get("max_amount_rub")
         if max_amount is not None and float(new_value) > float(max_amount):
@@ -666,7 +844,13 @@ async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> N
     await state.finish()
 
     updated = await get_card_by_id(card_id)
-    await message.answer("✅ Ограничение обновлено.", reply_markup=mastercard_main_keyboard())
+    await message.answer(
+        "✅ Ограничение обновлено.",
+        reply_markup=None if admin_mode else mastercard_main_keyboard(),
+    )
+
+    if admin_mode:
+        await state.update_data(mc_admin_owner_id=owner_id)
 
     if updated:
         await _show_card(message.bot, message.from_user.id, updated)
@@ -675,6 +859,16 @@ async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> N
 def register_mastercard_card_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(mastercard_cards_menu, text="💳 Карты", state="*")
 
+    dp.register_callback_query_handler(
+        mc_admin_open_owner,
+        lambda c: c.data and c.data.startswith("mc_admin_open:"),
+        state="*",
+    )
+    dp.register_callback_query_handler(
+        mc_admin_back_to_owners,
+        lambda c: c.data == "mc_admin_back_to_owners",
+        state="*",
+    )
     dp.register_callback_query_handler(
         mc_card_add_start,
         lambda c: c.data == "mc_card_add",

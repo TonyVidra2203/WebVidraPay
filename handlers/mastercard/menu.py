@@ -15,7 +15,7 @@ from handlers.common import active_mc_sessions, send_welcome
 def mastercard_main_keyboard() -> ReplyKeyboardMarkup:
     """Главная клавиатура MasterCard."""
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("💳 Карты"), KeyboardButton("✅ Заявки"))
+    kb.add(KeyboardButton("💳 Мои карты"), KeyboardButton("✅ Заявки"))
     kb.add(KeyboardButton("⚙️ Лимиты"), KeyboardButton("📊 Отчет прибыли"))
     kb.add(KeyboardButton("▶️ Начать сессию"), KeyboardButton("⏹ Завершить сессию"))
     return kb

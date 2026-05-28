@@ -25,7 +25,7 @@ from aiogram.types import (
 from aiogram.utils.exceptions import MessageNotModified
 
 import utils.helpers as helpers
-from db.cards import add_card, delete_card, get_all_cards, get_card_balance, init_cards_table, update_card
+from db.cards import add_card, delete_card, get_all_cards, get_card_balance, get_cards_by_owner, init_cards_table, update_card
 from db.connection import get_db
 from db.p2p import get_completed_p2p_orders_by_card
 from db.settings import (
@@ -667,71 +667,56 @@ async def admin_cards_message(message: types.Message, state: FSMContext) -> None
         return
 
     await init_cards_table()
-    cards = await get_all_cards()
 
-    def clean_bank_name(value: Any) -> str:
-        bank = str(value or "—").strip()
+    users = await get_all_users()
+    mastercard_users = [
+        u for u in users
+        if str(u.get("role") or "").strip().lower() == "mastercard"
+    ]
 
-        replacements = {
-            "сбер": "Сбер",
-            "тинькофф": "Тинь",
-            "т-": "Тинь",
-            "альфа": "Альф",
-            "райффайзен": "Райф",
-            "озон": "Озон",
-            "wildberries": "ВБ",
-            "вайлдберриз": "ВБ",
-            "втб": "ВТБ",
-        }
+    kb = InlineKeyboardMarkup(row_width=1)
 
-        low = bank.lower()
+    if not mastercard_users:
+        await message.bot.send_message(
+            message.chat.id,
+            "💳 Кабинеты MasterCard\n\nПользователей с ролью MasterCard пока нет.",
+            reply_markup=kb,
+        )
+        return
 
-        for key, value in replacements.items():
-            if key in low:
-                return value[:4]
+    lines: List[str] = [
+        "💳 Кабинеты MasterCard",
+        "",
+        "Нажмите на нужный кабинет, чтобы открыть его и редактировать карты.",
+        "",
+    ]
 
-        return bank[:4]
+    for mc_user in mastercard_users:
+        owner_id = int(mc_user["telegram_id"])
+        username = (mc_user.get("username") or "").strip()
+        title = f"@{username}" if username else f"ID {owner_id}"
 
-    def last4(value: Any) -> str:
-        digits = re.sub(r"\D", "", str(value or ""))
-        return digits[-4:] if len(digits) >= 4 else "—"
+        try:
+            cards = await get_cards_by_owner(owner_id)
+        except Exception:
+            cards = []
 
-    def money(value: float) -> str:
-        return str(int(round(value)))
+        active_count = sum(1 for c in cards if c.get("is_active", True))
+        lines.append(f"• {title} — карт: {len(cards)}, активных: {active_count}")
 
-    if cards:
-        lines: List[str] = ["💳 Карты", ""]
-
-        for c in cards:
-            balance = await get_card_balance(c["card_id"])
-
-            emoji = "🟢" if c.get("is_active", True) else "🔴"
-
-            bank = clean_bank_name(c.get("bank_name"))
-
-            phone_tail = last4(c.get("sbp_phone"))
-            card_tail = last4(c.get("card_number"))
-
-            lines.append(
-                f"{emoji} {bank} • {card_tail} — {phone_tail} •  {money(balance)} ₽"
+        kb.add(
+            InlineKeyboardButton(
+                f"Открыть {title} ({len(cards)})",
+                callback_data=f"mc_admin_open:{owner_id}",
             )
-
-        text = "\n".join(lines)
-
-    else:
-        text = "Сохранённых карт нет."
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("➕ Добавить", callback_data="card_add"),
-        InlineKeyboardButton("✏️ Редактировать", callback_data="card_edit_select"),
-    )
+        )
 
     await message.bot.send_message(
         message.chat.id,
-        text,
+        "\n".join(lines),
         reply_markup=kb,
     )
+
 
 
 

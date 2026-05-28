@@ -439,7 +439,7 @@ async def _set_card_balance(card_id: int, user_id: int, target_balance: Any) -> 
 async def _is_mastercard_user(user_id: int) -> bool:
     user = await get_user(int(user_id))
     role = str((user or {}).get("role") or "").strip().lower()
-    return role == "mastercard"
+    return role in {"mastercard", "admin"}
 
 
 async def _render_access_denied() -> HTMLResponse:
@@ -538,7 +538,7 @@ async def _render_access_denied() -> HTMLResponse:
 
   </style>
         </head>
-        <body><div class="wrap"><div class="card"><div class="bad">⛔</div><h2>Нет доступа</h2><p class="muted">Эта панель доступна только роли MasterCard.</p></div></div></body>
+        <body><div class="wrap"><div class="card"><div class="bad">⛔</div><h2>Нет доступа</h2><p class="muted">Эта панель доступна только роли MasterCard или Admin.</p></div></div></body>
         </html>
         """
     )
