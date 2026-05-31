@@ -143,7 +143,7 @@ def _paycore_keyboard(pay_url: str, order_id: int) -> InlineKeyboardMarkup:
             callback_data=f"paycore_show_qr:{order_id}",
         ),
         InlineKeyboardButton(
-            "🔗 Ссылка",
+            "✅ Оплатить",
             url=pay_url,
         ),
     )
@@ -2299,7 +2299,8 @@ async def _paycore_create_and_send(bot: Bot, state: FSMContext, user_id: int, ph
         f"Заявка: <b>#{int(order_id)}</b>\n"
         f"К получению: <b>{html.escape(_format_asset_amount_for_user(asset, crypto_amount))} {html.escape(asset)}</b>\n"
         f"Сумма заявки: <b>{int(round(rub_amount))}₽</b>\n\n"
-        "<i>На оплату даётся 16 минут.</i>"
+        "<i>⚠️ QR-код может отсканировать другой человек, чтобы оплатить вашу заявку.</i>\n\n"
+        "<u>На оплату дается 16 минут</u>"
     )
 
     sent = await bot.send_message(
