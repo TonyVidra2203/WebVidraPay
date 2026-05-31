@@ -266,6 +266,64 @@ async def _ensure_withdrawals_table() -> None:
     await db.commit()
 
 
+async def _get_table_columns(table_name: str) -> set[str]:
+    db = await get_db()
+    cur = await db.execute(f"PRAGMA table_info({table_name})")
+    rows = await cur.fetchall() or []
+    await cur.close()
+    return {str(row[1]) for row in rows}
+
+
+async def _record_card_withdrawal(admin_id: int, card_id: int, amount: float) -> None:
+    """
+    Записывает операцию вывода/корректировки баланса.
+
+    В старых установках таблица withdrawals могла быть создана раньше с немного
+    другой схемой, из-за чего прямой вызов db.cards.add_withdrawal иногда падал
+    Internal Server Error. Этот helper сначала проверяет реальные колонки таблицы
+    и вставляет только те поля, которые в ней есть. Для расчёта баланса главное —
+    чтобы были card_id и amount, их использует get_card_balance().
+    """
+    await _ensure_withdrawals_table()
+    columns = await _get_table_columns("withdrawals")
+    db = await get_db()
+
+    if "card_id" not in columns or "amount" not in columns:
+        raise RuntimeError("Таблица withdrawals не содержит обязательные поля card_id и amount")
+
+    insert_fields: list[str] = []
+    values: list[Any] = []
+
+    if "admin_id" in columns:
+        insert_fields.append("admin_id")
+        values.append(int(admin_id))
+    elif "user_id" in columns:
+        insert_fields.append("user_id")
+        values.append(int(admin_id))
+
+    insert_fields.extend(["card_id", "amount"])
+    values.extend([int(card_id), float(amount)])
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    if "date" in columns:
+        insert_fields.append("date")
+        values.append(now_utc)
+    elif "created_at" in columns:
+        insert_fields.append("created_at")
+        values.append(now_utc)
+
+    placeholders = ", ".join("?" for _ in insert_fields)
+    fields_sql = ", ".join(insert_fields)
+
+    await db.execute(
+        f"INSERT INTO withdrawals ({fields_sql}) VALUES ({placeholders})",
+        values,
+    )
+    await db.commit()
+
+
+
 async def _log_card_audit(
         *,
         owner_id: int,
@@ -457,19 +515,11 @@ async def _set_card_balance(
     # Баланс карты считается как completed-заявки минус withdrawals.
     # Поэтому корректировка баланса фиксируется технической записью в withdrawals:
     # положительная сумма уменьшает баланс, отрицательная — увеличивает.
-    await _ensure_withdrawals_table()
-    await add_withdrawal(
+    await _record_card_withdrawal(
         admin_id=int(admin_id or user_id),
         card_id=int(card_id),
         amount=float(diff),
     )
-    if admin_actor_id:
-        await _set_card_balance(
-            card_id=int(card_id),
-            user_id=int(user_id),
-            target_balance=target_balance,
-            admin_id=int(admin_actor_id),
-        )
 
     await _log_card_audit(
         owner_id=int(user_id),
@@ -1622,8 +1672,10 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
               </div>
               <div class="field-box">
                 <div class="box-title">Лимиты</div>
-                <input type="hidden" name="max_amount_rub" value="{DEFAULT_MAX_AMOUNT_RUB}">
-                <label>Мин. сумма, руб.<input name="min_amount_rub" inputmode="numeric" value="{DEFAULT_MIN_AMOUNT_RUB}"></label>
+                <div class="two">
+                  <label>Мин. сумма, руб.<input name="min_amount_rub" inputmode="numeric" value="{DEFAULT_MIN_AMOUNT_RUB}"></label>
+                  <label>Макс. сумма, руб.<input name="max_amount_rub" inputmode="numeric" value="{DEFAULT_MAX_AMOUNT_RUB}"></label>
+                </div>
                 <div class="two">
                   <label>Дневной лимит, руб.<input name="daily_limit_rub" inputmode="numeric" value="{DEFAULT_DAILY_LIMIT_RUB}"></label>
                   <label>Переводов в день, шт.<input name="daily_transfer_limit" inputmode="numeric" value="{DEFAULT_DAILY_TRANSFER_LIMIT}"></label>
@@ -1768,6 +1820,7 @@ async def mastercard_update_card(
         daily_limit_rub: str = Form(""),
         daily_transfer_limit: str = Form(""),
         transfer_pause_minutes: str = Form(""),
+        target_balance: str = Form(""),
 ):
     admin_actor_id = None
     try:
@@ -1944,8 +1997,11 @@ async def mastercard_withdraw_card(
             admin_id=admin_actor_id,
         )
 
-    await _ensure_withdrawals_table()
-    await add_withdrawal(admin_id=int(admin_actor_id or user_id), card_id=int(card_id), amount=float(value))
+    await _record_card_withdrawal(
+        admin_id=int(admin_actor_id or user_id),
+        card_id=int(card_id),
+        amount=float(value),
+    )
     await _log_card_audit(
         owner_id=int(user_id),
         card_id=int(card_id),
