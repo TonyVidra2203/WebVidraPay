@@ -1184,7 +1184,12 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
         input.addEventListener('input', function() {{ formatSbpInput(input); }});
       }});
       var hash = String(window.location.hash || '').replace('#','');
-      if (['cards','add','orders','stats'].indexOf(hash) >= 0) showTab(hash);
+      if (hash.indexOf('card-') === 0) {{
+        showTab('cards');
+        setCardsView('swipe', hash.replace('card-', ''));
+      }} else if (['cards','add','orders','stats'].indexOf(hash) >= 0) {{
+        showTab(hash);
+      }}
     }})();
   </script>
 </body>
@@ -1360,7 +1365,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
             )
 
             carousel_html += f"""
-              <article class="card-slide {'off' if not is_active else ''}" data-card-id="{card_id}">
+              <article id="card-{card_id}" class="card-slide {'off' if not is_active else ''}" data-card-id="{card_id}">
                 <div class="slide-top">
                   <div class="slide-title-wrap">
                     <div class="slide-bank">{bank_name}</div>
@@ -1889,7 +1894,7 @@ async def mastercard_toggle_card(
 
     card = await get_card_by_id(card_id)
     if not card or int(card.get("owner_id") or 0) != int(user_id):
-        return _redirect(user_id, "cards", admin_id=admin_actor_id)
+        return _redirect(user_id, f"card-{int(card_id)}", admin_id=admin_actor_id)
 
     currently_active = bool(card.get("is_active", True))
     if not currently_active:
@@ -1904,7 +1909,7 @@ async def mastercard_toggle_card(
             return _alert_redirect(
                 int(user_id),
                 f"Карту нельзя включить: {reason}. Дождитесь окончания лимита ({until}) или измените лимиты этой карты.",
-                "cards",
+                f"card-{int(card_id)}",
                 admin_id=admin_actor_id,
             )
         await _clear_limit_lock(int(card_id))
@@ -1922,7 +1927,7 @@ async def mastercard_toggle_card(
         title="Карта включена" if new_state else "Карта выключена",
         details="Пользователь изменил статус карты вручную.",
     )
-    return _redirect(user_id, "cards", admin_id=admin_actor_id)
+    return _redirect(user_id, f"card-{int(card_id)}", admin_id=admin_actor_id)
 
 
 @router.post("/card/delete")
