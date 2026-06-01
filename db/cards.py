@@ -470,11 +470,14 @@ async def delete_card(card_id: int, owner_id: Optional[int] = None) -> None:
 # -----------------------------------------------------------------------------
 
 async def add_withdrawal(admin_id: int, card_id: int, amount: float) -> None:
-    """Фиксирует вывод средств по карте."""
+    """Фиксирует вывод/коррекцию средств по карте."""
     db = await get_db()
     await db.execute(
-        "INSERT INTO withdrawals (admin_id, card_id, amount) VALUES (?, ?, ?);",
-        (admin_id, card_id, amount),
+        """
+        INSERT INTO withdrawals (admin_id, card_id, amount, date)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP);
+        """,
+        (int(admin_id), int(card_id), float(amount)),
     )
     await db.commit()
 
@@ -512,3 +515,291 @@ async def get_card_balance(card_id: int) -> float:
     withdraw_sum = float(row2[0] or 0.0)
 
     return p2p_sum - withdraw_sum
+
+# -----------------------------------------------------------------------------
+# Раздел: Коррекция балансов MasterCard
+# -----------------------------------------------------------------------------
+
+async def ensure_mastercard_balance_correction_tables() -> None:
+    """Создаёт таблицы сессий коррекции балансов MasterCard."""
+    db = await get_db()
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_balance_corrections (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id      INTEGER NOT NULL,
+            admin_id      INTEGER NOT NULL,
+            status        TEXT    NOT NULL DEFAULT 'active',
+            expected_cnt  INTEGER NOT NULL DEFAULT 0,
+            submitted_cnt INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_balance_correction_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            correction_id   INTEGER NOT NULL,
+            owner_id        INTEGER NOT NULL,
+            card_id         INTEGER NOT NULL,
+            old_balance     REAL,
+            new_balance     REAL,
+            correction_delta REAL,
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(correction_id, card_id)
+        );
+        """
+    )
+
+    await db.commit()
+
+
+async def start_mastercard_balance_correction(
+    owner_id: int,
+    card_ids: List[int],
+    admin_id: int,
+) -> Optional[int]:
+    """
+    Открывает новую активную коррекцию для держателя MasterCard.
+    Старые активные сессии этого держателя закрываются как replaced.
+    """
+    clean_card_ids = []
+    for card_id in card_ids or []:
+        try:
+            cid = int(card_id)
+        except Exception:
+            continue
+        if cid > 0 and cid not in clean_card_ids:
+            clean_card_ids.append(cid)
+
+    if not clean_card_ids:
+        return None
+
+    await ensure_mastercard_balance_correction_tables()
+    db = await get_db()
+
+    await db.execute(
+        """
+        UPDATE mastercard_balance_corrections
+           SET status = 'replaced', updated_at = datetime('now')
+         WHERE owner_id = ? AND status = 'active'
+        """,
+        (int(owner_id),),
+    )
+
+    cur = await db.execute(
+        """
+        INSERT INTO mastercard_balance_corrections(
+            owner_id, admin_id, status, expected_cnt, submitted_cnt, created_at, updated_at
+        )
+        VALUES(?, ?, 'active', ?, 0, datetime('now'), datetime('now'))
+        """,
+        (int(owner_id), int(admin_id), len(clean_card_ids)),
+    )
+    correction_id = int(cur.lastrowid)
+
+    for card_id in clean_card_ids:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO mastercard_balance_correction_items(
+                correction_id, owner_id, card_id, status, created_at, updated_at
+            )
+            VALUES(?, ?, ?, 'pending', datetime('now'), datetime('now'))
+            """,
+            (correction_id, int(owner_id), int(card_id)),
+        )
+
+    await db.commit()
+    return correction_id
+
+
+async def get_active_mastercard_balance_correction(owner_id: int) -> Optional[Dict[str, Any]]:
+    """Возвращает активную сессию коррекции держателя или None."""
+    await ensure_mastercard_balance_correction_tables()
+    db = await get_db()
+    db.row_factory = aiosqlite.Row
+
+    cur = await db.execute(
+        """
+        SELECT *
+          FROM mastercard_balance_corrections
+         WHERE owner_id = ? AND status = 'active'
+         ORDER BY id DESC
+         LIMIT 1
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+
+    return dict(row) if row else None
+
+
+async def is_mastercard_balance_correction_active(owner_id: int) -> bool:
+    """True, если держатель сейчас обязан пройти коррекцию балансов."""
+    return bool(await get_active_mastercard_balance_correction(int(owner_id)))
+
+
+async def get_pending_mastercard_balance_correction_cards(owner_id: int) -> List[Dict[str, Any]]:
+    """Возвращает карты, по которым в активной коррекции ещё не введён баланс."""
+    correction = await get_active_mastercard_balance_correction(int(owner_id))
+    if not correction:
+        return []
+
+    db = await get_db()
+    db.row_factory = aiosqlite.Row
+    await _add_missing_card_columns(db)
+
+    cur = await db.execute(
+        """
+        SELECT c.*
+          FROM mastercard_balance_correction_items i
+          JOIN cards c ON c.card_id = i.card_id
+         WHERE i.correction_id = ?
+           AND i.owner_id = ?
+           AND i.status = 'pending'
+         ORDER BY c.card_id
+        """,
+        (int(correction["id"]), int(owner_id)),
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+
+    return [_card_row_to_dict(r) for r in rows]
+
+
+async def is_mastercard_balance_correction_card_pending(owner_id: int, card_id: int) -> bool:
+    """Проверяет, ждёт ли активная коррекция баланс по конкретной карте."""
+    correction = await get_active_mastercard_balance_correction(int(owner_id))
+    if not correction:
+        return False
+
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT 1
+          FROM mastercard_balance_correction_items
+         WHERE correction_id = ?
+           AND owner_id = ?
+           AND card_id = ?
+           AND status = 'pending'
+         LIMIT 1
+        """,
+        (int(correction["id"]), int(owner_id), int(card_id)),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return bool(row)
+
+
+async def set_card_balance_to_amount(
+    *,
+    owner_id: int,
+    card_id: int,
+    new_balance: float,
+    admin_id: int,
+) -> Dict[str, float]:
+    """
+    Доводит расчётный баланс карты до заданной суммы через корректирующую
+    запись в withdrawals. Возвращает старый баланс, новый баланс и дельту.
+    """
+    card = await get_card_by_id(int(card_id))
+    if not card or int(card.get("owner_id") or 0) != int(owner_id):
+        raise ValueError("Карта не найдена или не принадлежит держателю.")
+
+    target = float(new_balance)
+    if target < 0:
+        raise ValueError("Баланс не может быть отрицательным.")
+
+    old_balance = float(await get_card_balance(int(card_id)))
+    correction_delta = old_balance - target
+
+    if abs(correction_delta) >= 0.005:
+        await add_withdrawal(int(admin_id), int(card_id), float(correction_delta))
+
+    return {
+        "old_balance": old_balance,
+        "new_balance": target,
+        "correction_delta": correction_delta,
+    }
+
+
+async def mark_mastercard_balance_correction_card_done(
+    *,
+    owner_id: int,
+    card_id: int,
+    old_balance: float,
+    new_balance: float,
+    correction_delta: float,
+) -> bool:
+    """Отмечает карту сданной; если все карты сданы — закрывает коррекцию."""
+    correction = await get_active_mastercard_balance_correction(int(owner_id))
+    if not correction:
+        return False
+
+    db = await get_db()
+
+    cur = await db.execute(
+        """
+        UPDATE mastercard_balance_correction_items
+           SET old_balance = ?,
+               new_balance = ?,
+               correction_delta = ?,
+               status = 'done',
+               updated_at = datetime('now')
+         WHERE correction_id = ?
+           AND owner_id = ?
+           AND card_id = ?
+           AND status = 'pending'
+        """,
+        (
+            float(old_balance),
+            float(new_balance),
+            float(correction_delta),
+            int(correction["id"]),
+            int(owner_id),
+            int(card_id),
+        ),
+    )
+
+    if cur.rowcount <= 0:
+        await db.commit()
+        return False
+
+    cur2 = await db.execute(
+        """
+        SELECT
+            COUNT(*) AS total_cnt,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_cnt
+          FROM mastercard_balance_correction_items
+         WHERE correction_id = ?
+        """,
+        (int(correction["id"]),),
+    )
+    row = await cur2.fetchone()
+    await cur2.close()
+
+    total_cnt = int(row[0] or 0) if row else 0
+    done_cnt = int(row[1] or 0) if row else 0
+    new_status = "done" if total_cnt > 0 and done_cnt >= total_cnt else "active"
+
+    await db.execute(
+        """
+        UPDATE mastercard_balance_corrections
+           SET submitted_cnt = ?,
+               status = ?,
+               updated_at = datetime('now')
+         WHERE id = ?
+        """,
+        (done_cnt, new_status, int(correction["id"])),
+    )
+
+    await db.commit()
+    return new_status == "done"
+

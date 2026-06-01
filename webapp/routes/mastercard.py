@@ -652,6 +652,156 @@ async def _clear_audit_logs(owner_id: int) -> None:
 
 
 
+async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
+    """
+    Сбрасывает рабочие данные Mastercard-карт владельца без удаления самих карт
+    и без изменения реквизитов/лимитов.
+
+    Что сбрасывается:
+    - привязка завершённых заявок к этим картам (card_id -> NULL), чтобы статистика
+      и баланс стартовали с нуля;
+    - withdrawals по этим картам;
+    - audit-логи и временные лимитные блокировки по этим картам.
+    """
+    cards = await get_cards_by_owner(int(owner_id))
+    card_ids = [
+        int(card.get("card_id") or 0)
+        for card in cards
+        if int(card.get("card_id") or 0) > 0
+    ]
+
+    await _ensure_mastercard_web_tables()
+    await _ensure_withdrawals_table()
+
+    db = await get_db()
+
+    if not card_ids:
+        await db.execute("DELETE FROM mastercard_card_audit WHERE owner_id = ?", (int(owner_id),))
+        await db.execute("DELETE FROM mastercard_card_limit_locks WHERE owner_id = ?", (int(owner_id),))
+        await db.commit()
+        return {
+            "cards": 0,
+            "orders_unlinked": 0,
+            "withdrawals_deleted": 0,
+            "audit_deleted": 0,
+            "locks_deleted": 0,
+        }
+
+    placeholders = ", ".join("?" for _ in card_ids)
+
+    orders_unlinked = 0
+    withdrawals_deleted = 0
+    audit_deleted = 0
+    locks_deleted = 0
+
+    try:
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM p2p_orders WHERE card_id IN ({placeholders})",
+            card_ids,
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        orders_unlinked = int(row[0] or 0) if row else 0
+    except Exception:
+        orders_unlinked = 0
+
+    try:
+        await db.execute(
+            f"UPDATE p2p_orders SET card_id = NULL WHERE card_id IN ({placeholders})",
+            card_ids,
+        )
+    except Exception:
+        pass
+
+    columns_withdrawals = await _get_table_columns("withdrawals")
+    if "card_id" in columns_withdrawals:
+        try:
+            cur = await db.execute(
+                f"SELECT COUNT(*) FROM withdrawals WHERE card_id IN ({placeholders})",
+                card_ids,
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            withdrawals_deleted = int(row[0] or 0) if row else 0
+        except Exception:
+            withdrawals_deleted = 0
+
+        try:
+            await db.execute(
+                f"DELETE FROM withdrawals WHERE card_id IN ({placeholders})",
+                card_ids,
+            )
+        except Exception:
+            pass
+
+    try:
+        cur = await db.execute(
+            f"""
+            SELECT COUNT(*)
+              FROM mastercard_card_audit
+             WHERE owner_id = ?
+                OR card_id IN ({placeholders})
+            """,
+            [int(owner_id), *card_ids],
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        audit_deleted = int(row[0] or 0) if row else 0
+    except Exception:
+        audit_deleted = 0
+
+    try:
+        await db.execute(
+            f"""
+            DELETE FROM mastercard_card_audit
+             WHERE owner_id = ?
+                OR card_id IN ({placeholders})
+            """,
+            [int(owner_id), *card_ids],
+        )
+    except Exception:
+        pass
+
+    try:
+        cur = await db.execute(
+            f"""
+            SELECT COUNT(*)
+              FROM mastercard_card_limit_locks
+             WHERE owner_id = ?
+                OR card_id IN ({placeholders})
+            """,
+            [int(owner_id), *card_ids],
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        locks_deleted = int(row[0] or 0) if row else 0
+    except Exception:
+        locks_deleted = 0
+
+    try:
+        await db.execute(
+            f"""
+            DELETE FROM mastercard_card_limit_locks
+             WHERE owner_id = ?
+                OR card_id IN ({placeholders})
+            """,
+            [int(owner_id), *card_ids],
+        )
+    except Exception:
+        pass
+
+    await db.commit()
+
+    return {
+        "cards": len(card_ids),
+        "orders_unlinked": orders_unlinked,
+        "withdrawals_deleted": withdrawals_deleted,
+        "audit_deleted": audit_deleted,
+        "locks_deleted": locks_deleted,
+    }
+
+
+
 async def _set_card_balance(
     card_id: int,
     user_id: int,
@@ -1010,6 +1160,9 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .stat-block{{padding:13px;border-radius:22px;border:1px solid rgba(255,255,255,.15);background:linear-gradient(180deg,#16161a,#0d0d10)}}
     .stat-block-title{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;font-size:14px;font-weight:950;color:var(--text)}}
     .stat-block-badge{{padding:5px 8px;border-radius:999px;border:1px solid rgba(214,179,95,.18);background:rgba(214,179,95,.06);color:var(--accent);font-size:10px;font-weight:950;text-transform:uppercase;letter-spacing:.35px}}
+    .stats-admin-reset{{margin:0;flex:0 0 auto}}
+    .stats-reset-btn{{min-height:34px;border:1px solid rgba(255,105,105,.26);border-radius:14px;background:rgba(255,105,105,.10);color:#ffd1d1;padding:0 12px;font-size:11.5px;font-weight:950;white-space:nowrap}}
+    .stats-reset-btn:active{{transform:scale(.99)}}
     .stat-grid{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}
     .stat-card{{min-width:0;padding:12px;border-radius:17px;border:1px solid rgba(255,255,255,.055);background:rgba(255,255,255,.024)}}
     .stat-label{{color:var(--muted2);font-size:10px;font-weight:950;text-transform:uppercase;letter-spacing:.35px;line-height:1.15}}
@@ -1385,6 +1538,17 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
 
     admin_hidden_input = (
         f'<input type="hidden" name="admin_id" value="{int(admin_id)}">'
+        if admin_mode and admin_id else ""
+    )
+    stats_reset_form = (
+        f"""
+        <form class="stats-admin-reset" method="post" action="/mastercard/cards/reset"
+              onsubmit="return confirm('Сбросить всю статистику и балансы по картам этого кабинета? Карты и настройки останутся.');">
+          <input type="hidden" name="user_id" value="{int(user_id)}">
+          <input type="hidden" name="admin_id" value="{int(admin_id)}">
+          <button class="stats-reset-btn" type="submit">Сбросить</button>
+        </form>
+        """
         if admin_mode and admin_id else ""
     )
     balance_admin_field_template = (
@@ -1892,6 +2056,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
               <div class="section-title">Статистика</div>
               <div class="section-note">Только отдельная сводка, без карт и форм.</div>
             </div>
+            {stats_reset_form}
           </div>
           <div class="stats-only">
             <div class="stat-block">
@@ -1994,6 +2159,30 @@ async def mastercard_clear_audit(
         return await _render_access_denied()
 
     await _clear_audit_logs(int(user_id))
+    return _redirect(int(user_id), "stats", admin_id=int(admin_actor_id))
+
+
+@router.post("/cards/reset")
+async def mastercard_reset_card_data(
+        user_id: int = Form(...),
+        admin_id: str = Form(""),
+):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
+    if not admin_actor_id:
+        return await _render_access_denied()
+
+    if not await _is_mastercard_user(int(user_id)):
+        return await _render_access_denied()
+
+    await _reset_mastercard_card_data(int(user_id))
     return _redirect(int(user_id), "stats", admin_id=int(admin_actor_id))
 
 

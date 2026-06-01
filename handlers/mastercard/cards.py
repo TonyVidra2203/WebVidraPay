@@ -16,7 +16,12 @@ from db.cards import (
     get_card_balance,
     get_card_by_id,
     get_cards_by_owner,
+    get_pending_mastercard_balance_correction_cards,
+    is_mastercard_balance_correction_active,
+    is_mastercard_balance_correction_card_pending,
+    mark_mastercard_balance_correction_card_done,
     set_card_active,
+    set_card_balance_to_amount,
     update_card,
 )
 from db.p2p import get_completed_p2p_orders_by_card
@@ -43,6 +48,10 @@ class MasterCardAddStates(StatesGroup):
 
 class MasterCardEditLimitStates(StatesGroup):
     waiting_value = State()
+
+
+class MasterCardBalanceCorrectionStates(StatesGroup):
+    waiting_balance = State()
 
 
 LIMIT_FIELD_CONFIG: Dict[str, Dict[str, Any]] = {
@@ -199,6 +208,14 @@ def _parse_money(raw: str) -> float:
     amount = float(value)
     if amount <= 0:
         raise ValueError("not_positive")
+    return amount
+
+
+def _parse_balance_amount(raw: str) -> float:
+    value = (raw or "").replace(" ", "").replace(",", ".").strip()
+    amount = float(value)
+    if amount < 0:
+        raise ValueError("negative")
     return amount
 
 
@@ -881,6 +898,149 @@ async def mc_limit_value_entered(message: types.Message, state: FSMContext) -> N
         await _show_card(message.bot, message.from_user.id, updated)
 
 
+
+def _correction_card_button_text(card: Dict[str, Any]) -> str:
+    bank = str(card.get("bank_name") or "Карта").strip() or "Карта"
+    card_number = str(card.get("card_number") or "").strip()
+    sbp_phone = str(card.get("sbp_phone") or "").strip()
+    digits = re.sub(r"\D+", "", card_number or sbp_phone)
+    tail = digits[-4:] if len(digits) >= 4 else "—"
+    return f"{bank} • {tail}"
+
+
+def _build_balance_correction_kb(cards: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    for card in cards:
+        card_id = int(card.get("card_id") or 0)
+        if card_id <= 0:
+            continue
+        kb.add(
+            InlineKeyboardButton(
+                _correction_card_button_text(card),
+                callback_data=f"mc_balance_check:{card_id}",
+            )
+        )
+    return kb
+
+
+async def mc_balance_check_start(callback: types.CallbackQuery, state: FSMContext) -> None:
+    user_id = int(callback.from_user.id)
+
+    if not await is_mastercard_user(user_id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        card_id = int((callback.data or "").split(":", 1)[1])
+    except Exception:
+        await callback.answer("Ошибка карты", show_alert=True)
+        return
+
+    card = await _get_owned_card(user_id, card_id)
+    if not card:
+        await callback.answer("Карта не найдена", show_alert=True)
+        return
+
+    if not await is_mastercard_balance_correction_active(user_id):
+        await callback.answer("Активной коррекции сейчас нет", show_alert=True)
+        return
+
+    if not await is_mastercard_balance_correction_card_pending(user_id, card_id):
+        await callback.answer("По этой карте баланс уже указан", show_alert=True)
+        return
+
+    current_balance = await get_card_balance(card_id)
+
+    await callback.answer()
+    await state.finish()
+    await state.update_data(mc_balance_check_card_id=card_id)
+
+    await callback.bot.send_message(
+        user_id,
+        f"💳 {_correction_card_button_text(card)}\n"
+        f"Текущий расчётный баланс в боте: {current_balance:.0f}₽\n\n"
+        "Введите фактический баланс на этой карте в рублях.\n"
+        "Например: 15400 или 15400.50",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await MasterCardBalanceCorrectionStates.waiting_balance.set()
+
+
+async def mc_balance_check_entered(message: types.Message, state: FSMContext) -> None:
+    user_id = int(message.from_user.id)
+
+    if not await is_mastercard_user(user_id):
+        await state.finish()
+        return
+
+    data = await state.get_data()
+    try:
+        card_id = int(data.get("mc_balance_check_card_id") or 0)
+    except Exception:
+        card_id = 0
+
+    if card_id <= 0:
+        await state.finish()
+        await message.answer("⚠️ Сессия ввода не найдена. Нажмите кнопку карты ещё раз.", reply_markup=mastercard_main_keyboard())
+        return
+
+    if not await is_mastercard_balance_correction_active(user_id):
+        await state.finish()
+        await message.answer("ℹ️ Активной коррекции сейчас нет.", reply_markup=mastercard_main_keyboard())
+        return
+
+    if not await is_mastercard_balance_correction_card_pending(user_id, card_id):
+        await state.finish()
+        await message.answer("ℹ️ По этой карте баланс уже указан.", reply_markup=mastercard_main_keyboard())
+        return
+
+    card = await _get_owned_card(user_id, card_id)
+    if not card:
+        await state.finish()
+        await message.answer("⚠️ Карта не найдена.", reply_markup=mastercard_main_keyboard())
+        return
+
+    try:
+        new_balance = _parse_balance_amount(message.text or "")
+    except Exception:
+        await message.answer("⚠️ Введите баланс числом. Можно 0. Пример: 15400")
+        return
+
+    try:
+        result = await set_card_balance_to_amount(
+            owner_id=user_id,
+            card_id=card_id,
+            new_balance=float(new_balance),
+            admin_id=user_id,
+        )
+        completed = await mark_mastercard_balance_correction_card_done(
+            owner_id=user_id,
+            card_id=card_id,
+            old_balance=float(result["old_balance"]),
+            new_balance=float(result["new_balance"]),
+            correction_delta=float(result["correction_delta"]),
+        )
+    except Exception as e:
+        await message.answer(f"❌ Не удалось сохранить баланс: {e}")
+        return
+
+    await state.finish()
+
+    if completed:
+        await message.answer(
+            f"✅ Баланс сохранён: {new_balance:.2f}₽\n\n"
+            "Коррекция завершена по всем картам. Теперь вы снова можете получать заявки.",
+            reply_markup=mastercard_main_keyboard(),
+        )
+        return
+
+    pending_cards = await get_pending_mastercard_balance_correction_cards(user_id)
+    await message.answer(
+        f"✅ Баланс сохранён: {new_balance:.2f}₽\n\n"
+        "Осталось указать баланс по следующим картам:",
+        reply_markup=_build_balance_correction_kb(pending_cards),
+    )
+
 def register_mastercard_card_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(mastercard_cards_menu, text="💳 Карты", state="*")
 
@@ -935,6 +1095,13 @@ def register_mastercard_card_handlers(dp: Dispatcher) -> None:
         state="*",
     )
 
+
+    dp.register_callback_query_handler(
+        mc_balance_check_start,
+        lambda c: c.data and c.data.startswith("mc_balance_check:"),
+        state="*",
+    )
+
     dp.register_message_handler(mc_card_add_bank, state=MasterCardAddStates.waiting_bank)
     dp.register_message_handler(mc_card_add_sbp, state=MasterCardAddStates.waiting_sbp)
     dp.register_message_handler(mc_card_add_number, state=MasterCardAddStates.waiting_number)
@@ -942,4 +1109,8 @@ def register_mastercard_card_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(
         mc_limit_value_entered,
         state=MasterCardEditLimitStates.waiting_value,
+    )
+    dp.register_message_handler(
+        mc_balance_check_entered,
+        state=MasterCardBalanceCorrectionStates.waiting_balance,
     )

@@ -36,6 +36,7 @@ from db.users import (
     set_binance_verified,
     set_user_btc_wallet,
 )
+from db.cards import is_mastercard_balance_correction_active
 from handlers.common import pending_buy_messages, pending_operator_messages, send_welcome
 from keyboards.inline import Callback, cancel_buy_keyboard, operator_keyboard
 import utils.helpers as helpers
@@ -525,7 +526,15 @@ async def _finalize_order(
             if tid <= 0:
                 continue
 
-            if role in {"mastercard", "admin"}:
+            if role == "mastercard":
+                try:
+                    if await is_mastercard_balance_correction_active(tid):
+                        continue
+                except Exception:
+                    logger.exception("Не удалось проверить коррекцию баланса Mastercard для %s", tid)
+                    continue
+                ops.append(tid)
+            elif role == "admin":
                 ops.append(tid)
 
         pending_operator_messages[user_id] = []
@@ -617,7 +626,16 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
         if tid <= 0 or tid in seen:
             continue
 
-        if role in {"mastercard", "admin"}:
+        if role == "mastercard":
+            try:
+                if await is_mastercard_balance_correction_active(tid):
+                    continue
+            except Exception:
+                logger.exception("Не удалось проверить коррекцию баланса Mastercard для %s", tid)
+                continue
+            seen.add(tid)
+            ops.append(tid)
+        elif role == "admin":
             seen.add(tid)
             ops.append(tid)
 

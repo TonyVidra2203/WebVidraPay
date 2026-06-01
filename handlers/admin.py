@@ -25,7 +25,7 @@ from aiogram.types import (
 from aiogram.utils.exceptions import MessageNotModified
 
 import utils.helpers as helpers
-from db.cards import add_card, delete_card, get_all_cards, get_card_balance, get_cards_by_owner, init_cards_table, update_card
+from db.cards import add_card, delete_card, get_all_cards, get_card_balance, get_cards_by_owner, init_cards_table, start_mastercard_balance_correction, update_card
 from db.connection import get_db
 from db.p2p import get_completed_p2p_orders_by_card
 from db.settings import (
@@ -175,7 +175,7 @@ ADMIN_KB.row(
 )
 ADMIN_KB.row(
     KeyboardButton("📉 Долг"),
-    KeyboardButton("VidraPay"),
+    KeyboardButton("Коррекция"),
     KeyboardButton("Split"),
 )
 
@@ -2603,6 +2603,105 @@ async def brelok_withdraw_amount_entered(message: types.Message, state: FSMConte
     )
 
 
+
+def _build_mastercard_correction_keyboard(cards: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    for card in cards:
+        card_id = int(card.get("card_id") or 0)
+        if card_id <= 0:
+            continue
+
+        bank = str(card.get("bank_name") or "Карта").strip() or "Карта"
+        card_number = str(card.get("card_number") or "").strip()
+        sbp_phone = str(card.get("sbp_phone") or "").strip()
+
+        tail_source = card_number or sbp_phone
+        digits = re.sub(r"\D+", "", tail_source)
+        tail = digits[-4:] if len(digits) >= 4 else "—"
+
+        kb.add(
+            InlineKeyboardButton(
+                f"{bank} • {tail}",
+                callback_data=f"mc_balance_check:{card_id}",
+            )
+        )
+
+    return kb
+
+
+async def admin_mastercard_correction_start(message: types.Message, state: FSMContext) -> None:
+    user = await get_user(message.from_user.id)
+    if not user or user["role"] != "Admin":
+        return
+
+    await state.finish()
+    await init_cards_table()
+
+    users = await get_all_users()
+    mastercard_users = [
+        u for u in users
+        if str(u.get("role") or "").strip().lower() == "mastercard"
+    ]
+
+    sent_count = 0
+    skipped_no_cards = 0
+    failed_count = 0
+
+    for mc_user in mastercard_users:
+        try:
+            owner_id = int(mc_user.get("telegram_id") or 0)
+        except Exception:
+            continue
+
+        if owner_id <= 0:
+            continue
+
+        try:
+            cards = await get_cards_by_owner(owner_id)
+        except Exception:
+            cards = []
+
+        if not cards:
+            skipped_no_cards += 1
+            continue
+
+        card_ids = [int(c["card_id"]) for c in cards if c.get("card_id")]
+        correction_id = await start_mastercard_balance_correction(
+            owner_id=owner_id,
+            card_ids=card_ids,
+            admin_id=int(message.from_user.id),
+        )
+        if not correction_id:
+            skipped_no_cards += 1
+            continue
+
+        text = (
+            "⚠️ <b>Коррекция балансов MasterCard</b>\n\n"
+            "Нужно указать текущий фактический баланс по каждой вашей карте.\n"
+            "Пока коррекция не завершена, новые заявки вам приходить не будут.\n\n"
+            "Нажмите кнопку с банком, введите баланс этой карты в рублях и повторите для остальных карт."
+        )
+
+        try:
+            await message.bot.send_message(
+                owner_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=_build_mastercard_correction_keyboard(cards),
+            )
+            sent_count += 1
+        except Exception:
+            failed_count += 1
+
+    await message.answer(
+        "✅ Коррекция запущена.\n\n"
+        f"Уведомлений отправлено: {sent_count}\n"
+        f"Без карт пропущено: {skipped_no_cards}\n"
+        f"Не удалось отправить: {failed_count}\n\n"
+        "Держатели MasterCard не будут получать новые заявки, пока не введут балансы по всем своим картам.",
+        reply_markup=ADMIN_KB,
+    )
+
 def register_admin_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(admin_start, commands=["start"], state="*")
 
@@ -2657,7 +2756,7 @@ def register_admin_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(admin_debt_add_entered, state=AdminDebtStates.waiting_add)
     dp.register_message_handler(admin_debt_set_entered, state=AdminDebtStates.waiting_set)
 
-    dp.register_message_handler(admin_distribution_toggle, lambda m: m.text == "VidraPay", state="*")
+    dp.register_message_handler(admin_mastercard_correction_start, lambda m: m.text == "Коррекция", state="*")
     dp.register_callback_query_handler(admin_casino_menu_callback, lambda c: c.data == "admin_casino_menu", state="*")
     dp.register_callback_query_handler(admin_casino_add_start, lambda c: c.data == "admin_casino_add", state="*")
     dp.register_callback_query_handler(admin_casino_delete_start, lambda c: c.data == "admin_casino_delete", state="*")
