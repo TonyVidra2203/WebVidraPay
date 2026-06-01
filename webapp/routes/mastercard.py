@@ -442,6 +442,110 @@ async def _get_card_today_limit_stats(card_id: int) -> dict[str, Any]:
     return {"count": int(row[0] or 0) if row else 0, "sum": float(row[1] or 0.0) if row else 0.0, "last": last_dt}
 
 
+
+
+async def _sum_reserve_withdrawals_for_cards(card_ids: list[int]) -> float:
+    if not card_ids:
+        return 0.0
+
+    await _ensure_withdrawals_table()
+    columns = await _get_table_columns("withdrawals")
+    if "card_id" not in columns or "amount" not in columns:
+        return 0.0
+
+    placeholders = ", ".join("?" for _ in card_ids)
+    db = await get_db()
+    cur = await db.execute(
+        f"""
+        SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0)
+          FROM withdrawals
+         WHERE card_id IN ({placeholders})
+        """,
+        [int(card_id) for card_id in card_ids],
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return float(row[0] or 0.0) if row else 0.0
+
+
+async def _count_reserve_withdrawal_logs(card_ids: list[int]) -> int:
+    if not card_ids:
+        return 0
+
+    await _ensure_withdrawals_table()
+    columns = await _get_table_columns("withdrawals")
+    if "card_id" not in columns or "amount" not in columns:
+        return 0
+
+    placeholders = ", ".join("?" for _ in card_ids)
+    db = await get_db()
+    cur = await db.execute(
+        f"""
+        SELECT COUNT(*)
+          FROM withdrawals
+         WHERE card_id IN ({placeholders})
+           AND amount > 0
+        """,
+        [int(card_id) for card_id in card_ids],
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return int(row[0] or 0) if row else 0
+
+
+async def _load_reserve_withdrawal_logs(
+    card_names: dict[int, str],
+    limit: int = 5,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    card_ids = [int(card_id) for card_id in card_names.keys() if int(card_id or 0) > 0]
+    if not card_ids:
+        return []
+
+    await _ensure_withdrawals_table()
+    columns = await _get_table_columns("withdrawals")
+    if "card_id" not in columns or "amount" not in columns:
+        return []
+
+    date_column = "date" if "date" in columns else ("created_at" if "created_at" in columns else "")
+    date_select = date_column if date_column else "''"
+
+    placeholders = ", ".join("?" for _ in card_ids)
+    db = await get_db()
+    cur = await db.execute(
+        f"""
+        SELECT card_id, amount, {date_select} AS created_at
+          FROM withdrawals
+         WHERE card_id IN ({placeholders})
+           AND amount > 0
+      ORDER BY id DESC
+         LIMIT ? OFFSET ?
+        """,
+        [*card_ids, int(limit), max(int(offset), 0)],
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        card_id = int(row[0] or 0)
+        amount = float(row[1] or 0.0)
+        result.append({
+            "card_id": card_id,
+            "card_name": card_names.get(card_id, f"Карта #{card_id}"),
+            "amount": amount,
+            "created_at": row[2] or "",
+        })
+    return result
+
+
+def _reserve_control_status_text(debt: float) -> str:
+    if debt > 0.01:
+        return "Есть недодача в резерв — держатель карт ещё должен вернуть деньги обменнику."
+    if debt < -0.01:
+        return "Есть переплата в резерв — держатель карт отправил больше, чем получил на карты."
+    return "Резерв закрыт — полученные средства и выводы в резерв сходятся."
+
 async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int = 5, offset: int = 0) -> list[dict[str, Any]]:
     await _ensure_mastercard_web_tables()
     db = await get_db()
@@ -450,6 +554,7 @@ async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int
         SELECT card_id, action, title, details, amount, diff, created_at
           FROM mastercard_card_audit
          WHERE owner_id = ?
+           AND ABS(COALESCE(diff, 0)) >= 0.01
       ORDER BY id DESC
          LIMIT ? OFFSET ?
         """,
@@ -457,6 +562,7 @@ async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int
     )
     rows = await cur.fetchall() or []
     await cur.close()
+
     result: list[dict[str, Any]] = []
     for row in rows:
         card_id = int(row[0] or 0)
@@ -473,16 +579,77 @@ async def _load_audit_logs(owner_id: int, card_names: dict[int, str], limit: int
     return result
 
 
+
 async def _count_audit_logs(owner_id: int) -> int:
     await _ensure_mastercard_web_tables()
     db = await get_db()
     cur = await db.execute(
-        "SELECT COUNT(*) FROM mastercard_card_audit WHERE owner_id = ?",
+        """
+        SELECT COUNT(*)
+          FROM mastercard_card_audit
+         WHERE owner_id = ?
+           AND ABS(COALESCE(diff, 0)) >= 0.01
+        """,
         (int(owner_id),),
     )
     row = await cur.fetchone()
     await cur.close()
     return int(row[0] or 0) if row else 0
+
+
+async def _get_audit_money_summary(owner_id: int) -> dict[str, Any]:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN diff > 0 THEN diff ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN diff < 0 THEN ABS(diff) ELSE 0 END), 0),
+            COALESCE(SUM(diff), 0),
+            COALESCE(MAX(ABS(diff)), 0)
+          FROM mastercard_card_audit
+         WHERE owner_id = ?
+           AND ABS(COALESCE(diff, 0)) >= 0.01
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+
+    plus_total = float(row[1] or 0.0) if row else 0.0
+    minus_total = float(row[2] or 0.0) if row else 0.0
+    net_total = float(row[3] or 0.0) if row else 0.0
+    max_diff = float(row[4] or 0.0) if row else 0.0
+
+    return {
+        "count": int(row[0] or 0) if row else 0,
+        "plus_total": plus_total,
+        "minus_total": minus_total,
+        "net_total": net_total,
+        "max_diff": max_diff,
+        "risk_text": (
+            "Есть крупные отклонения — проверьте последние операции."
+            if max_diff >= 10000 else
+            "Контроль без критичных отклонений."
+        ),
+    }
+
+
+
+async def _clear_audit_logs(owner_id: int) -> None:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        DELETE FROM mastercard_card_audit
+         WHERE owner_id = ?
+           AND ABS(COALESCE(diff, 0)) >= 0.01
+        """,
+        (int(owner_id),),
+    )
+    await db.commit()
+
 
 
 async def _set_card_balance(
@@ -1573,65 +1740,77 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
         int(card.get("card_id") or 0): str(card.get("bank_name") or f"Карта #{int(card.get('card_id') or 0)}")
         for card in enriched_cards
     }
-    try:
-        log_page = max(int(request.query_params.get("log_page") or 1), 1)
-    except Exception:
-        log_page = 1
-    logs_per_page = 5
-    audit_total = await _count_audit_logs(int(user_id))
-    audit_pages = max((audit_total + logs_per_page - 1) // logs_per_page, 1)
-    if log_page > audit_pages:
-        log_page = audit_pages
-    audit_offset = (log_page - 1) * logs_per_page
-    audit_logs = await _load_audit_logs(int(user_id), card_names, limit=logs_per_page, offset=audit_offset)
+    reserve_card_ids = [int(card_id) for card_id in card_names.keys() if int(card_id or 0) > 0]
 
-    audit_pagination_html = ""
-    if audit_total > logs_per_page:
-        prev_page = max(log_page - 1, 1)
-        next_page = min(log_page + 1, audit_pages)
-        prev_disabled = " style='opacity:.45;pointer-events:none'" if log_page <= 1 else ""
-        next_disabled = " style='opacity:.45;pointer-events:none'" if log_page >= audit_pages else ""
-        audit_pagination_html = f"""
+    try:
+        reserve_page = max(int(request.query_params.get("log_page") or 1), 1)
+    except Exception:
+        reserve_page = 1
+
+    logs_per_page = 5
+    admin_url_part = f"&admin_id={int(admin_id)}" if admin_mode and admin_id else ""
+
+    reserve_total_received = float(total_completed_amount or 0.0)
+    reserve_total_sent = await _sum_reserve_withdrawals_for_cards(reserve_card_ids)
+    reserve_debt = reserve_total_received - reserve_total_sent
+    reserve_status_text = _reserve_control_status_text(reserve_debt)
+
+    reserve_log_total = await _count_reserve_withdrawal_logs(reserve_card_ids)
+    reserve_pages = max((reserve_log_total + logs_per_page - 1) // logs_per_page, 1)
+    if reserve_page > reserve_pages:
+        reserve_page = reserve_pages
+
+    reserve_offset = (reserve_page - 1) * logs_per_page
+    reserve_logs = await _load_reserve_withdrawal_logs(
+        card_names,
+        limit=logs_per_page,
+        offset=reserve_offset,
+    )
+
+    reserve_pagination_html = ""
+    if reserve_log_total > logs_per_page:
+        prev_page = max(reserve_page - 1, 1)
+        next_page = min(reserve_page + 1, reserve_pages)
+        prev_disabled = " style='opacity:.45;pointer-events:none'" if reserve_page <= 1 else ""
+        next_disabled = " style='opacity:.45;pointer-events:none'" if reserve_page >= reserve_pages else ""
+        reserve_pagination_html = f"""
           <div class="log-pager">
-            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}&log_page={prev_page}#stats"{prev_disabled}>← Назад</a>
-            <div class="log-pager-info">{log_page} / {audit_pages}</div>
-            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}&log_page={next_page}#stats"{next_disabled}>Вперёд →</a>
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}{admin_url_part}&log_page={prev_page}#stats"{prev_disabled}>← Назад</a>
+            <div class="log-pager-info">{reserve_page} / {reserve_pages}</div>
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}{admin_url_part}&log_page={next_page}#stats"{next_disabled}>Вперёд →</a>
           </div>
         """
 
-    if audit_logs:
+    if reserve_logs:
         audit_html = ""
-        for item in audit_logs:
-            action = _esc(item.get("title") or "Действие")
+        running_debt = reserve_debt
+        for item in reserve_logs:
             card_name = _esc(item.get("card_name") or "Карта")
-            details = _esc(item.get("details") or "")
             when = _fmt_date_short(item.get("created_at"))
-            diff = float(item.get("diff") or 0.0)
             amount = float(item.get("amount") or 0.0)
-            is_alert = abs(diff) >= 1000 or str(item.get("action") or "") in {"balance_adjust", "limit_off"}
-            alert_class = "log-alert" if is_alert else ""
-            diff_html = ""
-            if abs(diff) >= 0.01:
-                sign = "+" if diff > 0 else ""
-                diff_html = f'<div class="log-diff">Отклонение: {sign}{_fmt_money(diff)}</div>'
-            elif amount > 0:
-                diff_html = f'<div class="log-diff">Сумма: {_fmt_money(amount)}</div>'
+            debt_after_this_log = running_debt
+            running_debt += amount
+            alert_class = "log-alert" if debt_after_this_log > 0.01 else ""
             audit_html += f"""
               <div class="log-card {alert_class}">
                 <div class="log-top">
-                  <div><div class="log-name">{action}</div><div class="log-text">{card_name}</div></div>
+                  <div>
+                    <div class="log-name">Вывод в резерв</div>
+                    <div class="log-text">{card_name}</div>
+                  </div>
                   <div class="log-time">{when}</div>
                 </div>
-                <div class="log-text">{details}</div>
-                {diff_html}
+                <div class="log-text">Держатель карт отправил средства в резерв обменника.</div>
+                <div class="log-diff">Сумма вывода: {_fmt_money(amount)}</div>
+                <div class="log-text">Недодача после этого вывода: {_fmt_money(max(debt_after_this_log, 0.0))}</div>
               </div>
             """
-        audit_html += audit_pagination_html
+        audit_html += reserve_pagination_html
     else:
         audit_html = """
           <div class="empty">
-            <div class="empty-title">Журнал пока пуст</div>
-            <div class="empty-text">Здесь будут фиксироваться выводы, изменения лимитов, включения/выключения карт, удаления и срабатывания ограничений.</div>
+            <div class="empty-title">Выводов в резерв пока нет</div>
+            <div class="empty-text">Когда держатель карт нажмёт «Вывести», операция появится здесь и уменьшит его недодачу.</div>
           </div>
         """
 
@@ -1741,8 +1920,28 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
               </div>
             </div>
 
-            <div class="stat-log">
-              <div class="log-title">Журнал контроля</div>
+                        <div class="stat-log">
+              <div class="log-title">Контроль резерва</div>
+
+              <div class="stat-grid" style="margin-bottom:2px">
+                <div class="stat-card"><div class="stat-label">Получено на карты</div><div class="stat-value">{_fmt_money(reserve_total_received)}</div></div>
+                <div class="stat-card"><div class="stat-label">Отправлено в резерв</div><div class="stat-value">{_fmt_money(reserve_total_sent)}</div></div>
+                <div class="stat-card"><div class="stat-label">Недодача</div><div class="stat-value">{_fmt_money(max(reserve_debt, 0.0))}</div></div>
+                <div class="stat-card"><div class="stat-label">Переплата</div><div class="stat-value">{_fmt_money(abs(min(reserve_debt, 0.0)))}</div></div>
+              </div>
+
+              <div class="log-card" style="border-color:rgba(214,179,95,.18);background:rgba(214,179,95,.045)">
+                <div class="log-top">
+                  <div>
+                    <div class="log-name">Финансовый контроль</div>
+                    <div class="log-text">{_esc(reserve_status_text)}</div>
+                  </div>
+                  <div class="log-time">ДОЛГ</div>
+                </div>
+                <div class="log-diff">Текущий долг держателя перед резервом: {_fmt_money(max(reserve_debt, 0.0))}</div>
+              </div>
+
+              <div class="log-title" style="margin-top:4px">История выводов в резерв</div>
               {audit_html}
             </div>
           </div>
@@ -1771,6 +1970,31 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
     """
 
     return _page("MasterCard", body, _fmt_money(total_balance))
+
+
+
+@router.post("/audit/clear")
+async def mastercard_clear_audit(
+        user_id: int = Form(...),
+        admin_id: str = Form(""),
+):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
+    if not admin_actor_id:
+        return await _render_access_denied()
+
+    if not await _is_mastercard_user(int(user_id)):
+        return await _render_access_denied()
+
+    await _clear_audit_logs(int(user_id))
+    return _redirect(int(user_id), "stats", admin_id=int(admin_actor_id))
 
 
 @router.post("/card/add")
