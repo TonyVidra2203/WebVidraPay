@@ -658,10 +658,15 @@ async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
     и без изменения реквизитов/лимитов.
 
     Что сбрасывается:
-    - привязка завершённых заявок к этим картам (card_id -> NULL), чтобы статистика
-      и баланс стартовали с нуля;
+    - привязка заявок к этим картам (card_id -> NULL), чтобы статистика и баланс
+      стартовали с нуля;
     - withdrawals по этим картам;
-    - audit-логи и временные лимитные блокировки по этим картам.
+    - audit-логи и временные лимитные блокировки по этим картам;
+    - служебные записи VidraPay-распределения по этим картам.
+
+    Важно: после сброса карты, которые были выключены именно временной
+    лимитной блокировкой, включаются обратно. Иначе VidraPay продолжает брать
+    только active-карты и может не показать реквизиты даже при балансе ниже депозита.
     """
     cards = await get_cards_by_owner(int(owner_id))
     card_ids = [
@@ -685,6 +690,8 @@ async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
             "withdrawals_deleted": 0,
             "audit_deleted": 0,
             "locks_deleted": 0,
+            "vidrapay_usage_deleted": 0,
+            "cards_reactivated": 0,
         }
 
     placeholders = ", ".join("?" for _ in card_ids)
@@ -693,6 +700,31 @@ async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
     withdrawals_deleted = 0
     audit_deleted = 0
     locks_deleted = 0
+    vidrapay_usage_deleted = 0
+    cards_reactivated = 0
+
+    locked_card_ids: list[int] = []
+    try:
+        cur = await db.execute(
+            f"""
+            SELECT card_id
+              FROM mastercard_card_limit_locks
+             WHERE owner_id = ?
+                OR card_id IN ({placeholders})
+            """,
+            [int(owner_id), *card_ids],
+        )
+        rows = await cur.fetchall() or []
+        await cur.close()
+        for row in rows:
+            try:
+                locked_card_id = int(row[0] or 0)
+            except Exception:
+                locked_card_id = 0
+            if locked_card_id > 0 and locked_card_id in card_ids and locked_card_id not in locked_card_ids:
+                locked_card_ids.append(locked_card_id)
+    except Exception:
+        locked_card_ids = []
 
     try:
         cur = await db.execute(
@@ -790,6 +822,64 @@ async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
     except Exception:
         pass
 
+    try:
+        cur = await db.execute(
+            """
+            SELECT name
+              FROM sqlite_master
+             WHERE type = 'table'
+               AND name = 'vidrapay_card_distribution_usage'
+             LIMIT 1
+            """
+        )
+        usage_table = await cur.fetchone()
+        await cur.close()
+        if usage_table:
+            cur = await db.execute(
+                f"SELECT COUNT(*) FROM vidrapay_card_distribution_usage WHERE card_id IN ({placeholders})",
+                card_ids,
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            vidrapay_usage_deleted = int(row[0] or 0) if row else 0
+
+            await db.execute(
+                f"DELETE FROM vidrapay_card_distribution_usage WHERE card_id IN ({placeholders})",
+                card_ids,
+            )
+    except Exception:
+        vidrapay_usage_deleted = 0
+
+    if locked_card_ids:
+        locked_placeholders = ", ".join("?" for _ in locked_card_ids)
+        try:
+            cur = await db.execute(
+                f"""
+                SELECT COUNT(*)
+                  FROM cards
+                 WHERE owner_id = ?
+                   AND card_id IN ({locked_placeholders})
+                   AND COALESCE(is_active, 1) = 0
+                """,
+                [int(owner_id), *locked_card_ids],
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            cards_reactivated = int(row[0] or 0) if row else 0
+
+            await db.execute(
+                f"""
+                UPDATE cards
+                   SET is_active = 1,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE owner_id = ?
+                   AND card_id IN ({locked_placeholders})
+                """,
+                [int(owner_id), *locked_card_ids],
+            )
+        except Exception:
+            cards_reactivated = 0
+
     await db.commit()
 
     return {
@@ -798,6 +888,8 @@ async def _reset_mastercard_card_data(owner_id: int) -> dict[str, int]:
         "withdrawals_deleted": withdrawals_deleted,
         "audit_deleted": audit_deleted,
         "locks_deleted": locks_deleted,
+        "vidrapay_usage_deleted": vidrapay_usage_deleted,
+        "cards_reactivated": cards_reactivated,
     }
 
 
@@ -929,8 +1021,8 @@ async def _render_access_denied() -> HTMLResponse:
       html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
       html.is-android .title{{font-size:20px!important}}
       html.is-android .subtitle{{font-size:11.5px!important}}
-      html.is-android .top-balance{{min-width:138px!important}}
-      html.is-android .top-balance b{{font-size:25px!important}}
+      html.is-android .top-balance{{min-width:122px!important}}
+      html.is-android .top-balance b{{font-size:20px!important}}
       html.is-android .panel{{border-radius:24px!important}}
       html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
       html.is-android .nav-btn{{min-height:40px!important;font-size:10.6px!important;border-radius:13px!important;padding:0 4px!important}}
@@ -1010,7 +1102,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .subtitle{{margin-top:5px;color:var(--muted);font-size:12.5px;line-height:1.25}}
     .top-balance{{
       flex:0 0 auto;
-      min-width:156px;
+      min-width:132px;
       text-align:right;
       padding:0 1px 0 0;
     }}
@@ -1028,12 +1120,12 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .top-balance b{{
       display:block;
       color:var(--accent2);
-      font-size:28px;
+      font-size:21px;
       line-height:.96;
       font-weight:1000;
-      letter-spacing:-.75px;
+      letter-spacing:-.35px;
       white-space:nowrap;
-      text-shadow:0 0 18px rgba(214,179,95,.36);
+      text-shadow:0 0 12px rgba(214,179,95,.28);
     }}
     .panel{{border:1px solid var(--line);border-radius:28px;background:#101116;box-shadow:0 18px 54px rgba(0,0,0,.42);overflow:hidden}}
     .nav{{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;padding:10px;background:#101116;border-bottom:1px solid var(--line);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}
@@ -1213,9 +1305,9 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .logo{{width:44px;height:44px;flex-basis:44px;border-radius:15px}}
       .title{{font-size:21px}}
       .subtitle{{font-size:12px}}
-      .top-balance{{min-width:142px;padding-top:1px}}
+      .top-balance{{min-width:122px;padding-top:1px}}
       .top-balance span{{font-size:9.2px;margin-bottom:5px;color:rgba(246,243,234,.68)}}
-      .top-balance b{{font-size:27px;color:#e6c76e;text-shadow:0 0 16px rgba(214,179,95,.42)}}
+      .top-balance b{{font-size:20px;color:#e6c76e;text-shadow:0 0 11px rgba(214,179,95,.34)}}
       .panel{{border-color:rgba(255,255,255,.16);background:#0b0b0d}}
       .tab{{padding:13px}}
       .section-head{{align-items:center;gap:8px}}
@@ -1253,9 +1345,9 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .section-head{{align-items:center}}
       .view-switch{{min-width:126px}}
       .view-switch-btn{{font-size:11px;padding:0 7px}}
-      .top-balance{{min-width:132px}}
+      .top-balance{{min-width:112px}}
       .top-balance span{{font-size:8.5px}}
-      .top-balance b{{font-size:24px}}
+      .top-balance b{{font-size:19px}}
     }}
 
 
@@ -1311,8 +1403,8 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
       html.is-android .title{{font-size:20px!important}}
       html.is-android .subtitle{{font-size:11.5px!important}}
-      html.is-android .top-balance{{min-width:138px!important}}
-      html.is-android .top-balance b{{font-size:25px!important}}
+      html.is-android .top-balance{{min-width:122px!important}}
+      html.is-android .top-balance b{{font-size:20px!important}}
       html.is-android .panel{{border-radius:24px!important}}
       html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
       html.is-android .nav-btn{{min-height:40px!important;font-size:10.6px!important;border-radius:13px!important;padding:0 4px!important}}
