@@ -185,9 +185,11 @@ async def _mastercard_owner_can_accept_vidrapay_order(
     """
     Проверяет общий депозит Mastercard для выдачи карт в VidraPay.
 
-    Карты владельца показываются только если:
-    current_cards_balance + order_amount_rub < mastercard_deposit_rub.
-    Если депозит не задан, карты владельца не показываются.
+    Важно:
+    - депозит ограничивает уже накопленную сумму на картах владельца;
+    - текущую заявку в проверку НЕ добавляем, иначе при депозите 28 000 ₽
+      и заявке на 28 000 ₽ реквизиты не показываются даже при балансе карт 0 ₽;
+    - если депозит не задан, карты владельца не показываются.
     """
     try:
         owner_id = int(owner_id)
@@ -209,17 +211,9 @@ async def _mastercard_owner_can_accept_vidrapay_order(
     if deposit <= 0:
         return False
 
-    try:
-        order_amount = float(order_amount_rub or 0.0)
-    except Exception:
-        order_amount = 0.0
-
-    if order_amount < 0:
-        order_amount = 0.0
-
     cards_balance = await _get_mastercard_owner_cards_balance(owner_id)
 
-    return bool(cards_balance < deposit and (cards_balance + order_amount) < deposit)
+    return bool(cards_balance < deposit)
 
 
 async def _get_p2p_order(order_id: int, user_id: int) -> Optional[Dict[str, Any]]:
