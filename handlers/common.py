@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 import math
 from aiogram import Bot, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.p2p import get_completed_orders_by_master
 from keyboards.inline import buy_keyboard
@@ -34,16 +35,84 @@ async def send_welcome(
 ) -> None:
     """
     Отправить приветственное изображение с главным inline-меню.
-
-    mastercard_url передаётся только для пользователей с ролью MasterCard.
-    Если его нет — кнопка MasterCard в меню не появится.
     """
+    keyboard = buy_keyboard(mastercard_url=mastercard_url)
+
+    work_btn = InlineKeyboardButton(
+        text="‼️Заработок на картах‼️",
+        callback_data="work_info"
+    )
+
+    keyboard.inline_keyboard.insert(0, [work_btn])
+
     with open("assets/menu.jpg", "rb") as photo:
         await bot.send_photo(
             chat_id=chat_id,
             photo=photo,
-            reply_markup=buy_keyboard(mastercard_url=mastercard_url),
+            reply_markup=keyboard,
         )
+
+
+async def work_info_callback(callback_query: types.CallbackQuery) -> None:
+    """
+    При нажатии 'Работа':
+    удаляет главное меню и показывает объявление с кнопкой 'Назад'.
+    """
+    await callback_query.answer()
+
+    try:
+        await callback_query.message.delete()
+    except Exception:
+        pass
+
+    text = (
+        "💳 <b>ИЩЕМ ДЕРЖАТЕЛЕЙ КАРТ ДЛЯ ЗАРАБОТКА</b> 💸\n\n"
+        "Есть своя лишняя банковская карта?\n"
+        "Начни зарабатывать прямо со своего телефона через Telegram-бота.\n\n"
+        "✅ Свободный график\n"
+        "✅ Выплаты каждый день\n"
+        "✅ Всё через удобный бот\n"
+        "✅ Личный кабинет + статистика\n"
+        "✅ Сам контролируешь лимиты и активность карт\n\n"
+        "<b>Что нужно:</b>\n"
+        "— карта банка РФ\n"
+        "— Telegram\n"
+        "— 18+\n"
+        "— быть на связи\n\n"
+        "💰 Доход зависит от активности — некоторые участники делают хороший дополнительный заработок уже в первые дни.\n\n"
+        "Пиши в тех. поддержку!\n"
+        "P.S. Необходим залог от 10к рублей."
+    )
+
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")
+    )
+
+    await callback_query.message.bot.send_message(
+        chat_id=callback_query.from_user.id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def back_to_main_menu_callback(callback_query: types.CallbackQuery) -> None:
+    """
+    При нажатии 'Назад':
+    удаляет объявление и возвращает классическое главное меню.
+    """
+    await callback_query.answer()
+
+    try:
+        await callback_query.message.delete()
+    except Exception:
+        pass
+
+    await send_welcome(
+        bot=callback_query.message.bot,
+        chat_id=callback_query.from_user.id,
+    )
 
 
 # -----------------------------------------------------------------------------

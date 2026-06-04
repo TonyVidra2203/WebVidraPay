@@ -14,15 +14,16 @@ from config.settings import settings
 from db.admin_debts import init_admin_debts_db
 from db.cards import init_cards_table
 from db.connection import close_db
+from db.mastercard import init_mastercard_db
 from db.p2p import init_p2p_db
 from db.settings import init_settings_table
 from db.sms_events import init_sms_events_db
 from db.transactions import init_orders_db
 from db.users import init_users_db
 from handlers import register_all
+from handlers.common import work_info_callback, back_to_main_menu_callback
 from middlewares.block_inactive import BlockInactiveUsersMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
-from db.mastercard import init_mastercard_db
 
 
 # -----------------------------------------------------------------------------
@@ -41,8 +42,21 @@ async def handle_bot_blocked(update: types.Update, exception: BotBlocked) -> boo
     return True
 
 
+async def handle_unexpected_error(update: types.Update, exception: Exception) -> bool:
+    """
+    Общий обработчик всех неожиданных ошибок в хендлерах.
+    Логирует ошибку и не даёт ей прервать работу бота.
+    """
+    logging.exception(
+        "Неожиданная ошибка при обработке апдейта %r: %r",
+        update,
+        exception,
+    )
+    return True
+
+
 # -----------------------------------------------------------------------------
-# Раздел: Жизненный цикл бота (startup/shutdown)
+# Раздел: Жизненный цикл бота startup/shutdown
 # -----------------------------------------------------------------------------
 async def on_startup(dispatcher: Dispatcher) -> None:
     """Инициализация БД, таблиц и сервисов перед стартом polling."""
@@ -60,14 +74,12 @@ async def on_startup(dispatcher: Dispatcher) -> None:
 
 async def on_shutdown(dispatcher: Dispatcher) -> None:
     """Корректное завершение работы: закрытие FSM-хранилища и соединений с БД."""
-    # Пытаемся корректно закрыть FSM-хранилище
     try:
         await dispatcher.storage.close()
         await dispatcher.storage.wait_closed()
     except Exception:
         logging.exception("Ошибка при закрытии FSM-хранилища")
 
-    # Пытаемся корректно закрыть соединение с БД
     try:
         await close_db()
     except Exception:
@@ -76,22 +88,8 @@ async def on_shutdown(dispatcher: Dispatcher) -> None:
     logging.info("Bot shutdown complete")
 
 
-async def handle_unexpected_error(update: types.Update, exception: Exception) -> bool:
-    """
-    Общий обработчик всех неожиданных ошибок в хендлерах.
-    Логирует ошибку и не даёт ей прервать работу бота.
-    """
-    logging.exception(
-        "Неожиданная ошибка при обработке апдейта %r: %r",
-        update,
-        exception,
-    )
-    # Возвращаем True, чтобы aiogram не пробрасывал исключение дальше
-    return True
-
-
 # -----------------------------------------------------------------------------
-# Раздел: Точка входа и устойчивый поллинг
+# Раздел: Точка входа и устойчивый polling
 # -----------------------------------------------------------------------------
 def main() -> None:
     """Запускает устойчивый polling с экспоненциальным бэкоффом."""
@@ -105,10 +103,21 @@ def main() -> None:
             dp = Dispatcher(bot, storage=storage)
 
             dp.middleware.setup(BlockInactiveUsersMiddleware())
-
             dp.middleware.setup(RateLimitMiddleware())
 
             register_all(dp)
+
+            dp.register_callback_query_handler(
+                work_info_callback,
+                lambda callback_query: callback_query.data == "work_info",
+                state="*",
+            )
+
+            dp.register_callback_query_handler(
+                back_to_main_menu_callback,
+                lambda callback_query: callback_query.data == "back_to_main_menu",
+                state="*",
+            )
 
             dp.register_errors_handler(handle_bot_blocked, exception=BotBlocked)
             dp.register_errors_handler(handle_unexpected_error)
