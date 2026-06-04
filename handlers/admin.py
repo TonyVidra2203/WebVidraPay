@@ -679,45 +679,58 @@ async def admin_cards_message(message: types.Message, state: FSMContext) -> None
     if not mastercard_users:
         await message.bot.send_message(
             message.chat.id,
-            "💳 Кабинеты MasterCard\n\nПользователей с ролью MasterCard пока нет.",
+            "💳 Кабинеты MasterCard:\n\nПользователей с ролью MasterCard пока нет.",
             reply_markup=kb,
         )
         return
 
     lines: List[str] = [
-        "💳 Кабинеты MasterCard",
-        "",
-        "Нажмите на нужный кабинет, чтобы открыть его и редактировать карты.",
+        "💳 Кабинеты MasterCard:",
         "",
     ]
 
-    for mc_user in mastercard_users:
+    for idx, mc_user in enumerate(mastercard_users, start=1):
         owner_id = int(mc_user["telegram_id"])
-        username = (mc_user.get("username") or "").strip()
-        title = f"@{username}" if username else f"ID {owner_id}"
+        title = f"Мк-{idx}"
 
         try:
             cards = await get_cards_by_owner(owner_id)
         except Exception:
             cards = []
 
+        total_count = len(cards)
         active_count = sum(1 for c in cards if c.get("is_active", True))
-        lines.append(f"• {title} — карт: {len(cards)}, активных: {active_count}")
+        inactive_count = total_count - active_count
+
+        total_balance = 0.0
+        for card in cards:
+            try:
+                total_balance += float(await get_card_balance(int(card["card_id"])))
+            except Exception:
+                pass
+
+        balance_text = f"{int(total_balance)} руб."
+
+        lines.append(
+            f"• {title} — {owner_id}\n"
+            f"  Всего карт: {total_count}\n"
+            f"  Активных: {active_count}\n"
+            f"  Неактивных: {inactive_count}\n"
+            f"  Сумма на картах: {balance_text}"
+        )
 
         kb.add(
             InlineKeyboardButton(
-                f"Открыть {title} ({len(cards)})",
+                f"{title} — {total_count}/{active_count}, {balance_text}",
                 callback_data=f"mc_admin_open:{owner_id}",
             )
         )
 
     await message.bot.send_message(
         message.chat.id,
-        "\n".join(lines),
+        "\n\n".join(lines),
         reply_markup=kb,
     )
-
-
 
 
 

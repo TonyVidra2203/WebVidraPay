@@ -1298,6 +1298,176 @@ def _format_card_choice_button(card: Dict[str, Any], *, method: str, is_admin: b
     return base[:64]
 
 
+def _format_rub_for_mastercard(value: Any) -> str:
+    """Форматирует сумму для строк/кнопок Mastercard без копеек."""
+    try:
+        amount = int(round(float(value or 0)))
+    except Exception:
+        amount = 0
+    return f"{amount}"
+
+
+def _card_is_active_for_mastercard_stats(card: Dict[str, Any]) -> bool:
+    """
+    Определяет активность карты для сводки Mastercard.
+
+    Поддерживает несколько возможных имён полей, чтобы не зависеть от
+    конкретной версии схемы БД: is_active / active / enabled / status.
+    """
+    for key in ("is_active", "active", "enabled"):
+        if key in card:
+            value = card.get(key)
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on", "active", "enabled"}
+            return bool(value)
+
+    status = str(card.get("status") or "").strip().lower()
+    if status:
+        return status in {"active", "enabled", "on", "work", "working"}
+
+    # Если явного поля активности нет, считаем карту активной,
+    # чтобы старые схемы БД не показывали все карты как неактивные.
+    return True
+
+
+def _get_card_balance_from_row(card: Dict[str, Any]) -> float:
+    """Пробует взять текущую сумму карты из самой строки карты."""
+    for key in (
+        "balance",
+        "balance_rub",
+        "current_balance",
+        "current_balance_rub",
+        "current_amount",
+        "current_amount_rub",
+        "amount",
+        "amount_rub",
+        "total_rub",
+    ):
+        if key not in card:
+            continue
+        try:
+            return float(card.get(key) or 0)
+        except Exception:
+            continue
+    return 0.0
+
+
+async def _get_mastercard_cards_balance_map(cards: List[Dict[str, Any]]) -> Dict[int, float]:
+    """
+    Возвращает card_id -> текущая сумма на карте.
+
+    Сначала берёт сумму из строки карты. Если там суммы нет — пробует вызвать
+    db.cards.get_card_balance(card_id), если такая функция есть в проекте.
+    """
+    balances: Dict[int, float] = {}
+
+    try:
+        from db.cards import get_card_balance  # type: ignore
+    except Exception:
+        get_card_balance = None
+
+    for card in cards:
+        try:
+            card_id = int(card.get("card_id") or 0)
+        except Exception:
+            card_id = 0
+
+        if card_id <= 0:
+            continue
+
+        row_balance = _get_card_balance_from_row(card)
+        if row_balance:
+            balances[card_id] = row_balance
+            continue
+
+        if get_card_balance is not None:
+            try:
+                balances[card_id] = float(await get_card_balance(card_id) or 0)
+                continue
+            except Exception:
+                pass
+
+        balances[card_id] = 0.0
+
+    return balances
+
+
+def _build_mastercard_cabinet_stats(
+    cards: List[Dict[str, Any]],
+    balances_by_card_id: Dict[int, float],
+) -> List[Dict[str, Any]]:
+    """Группирует карты по owner_id и присваивает кабинетам названия Мк-1, Мк-2..."""
+    grouped: Dict[int, Dict[str, Any]] = {}
+
+    for card in cards:
+        try:
+            owner_id = int(card.get("owner_id") or 0)
+        except Exception:
+            owner_id = 0
+
+        if owner_id <= 0:
+            continue
+
+        item = grouped.setdefault(
+            owner_id,
+            {
+                "owner_id": owner_id,
+                "cards": [],
+                "total_cards": 0,
+                "active_cards": 0,
+                "inactive_cards": 0,
+                "balance_rub": 0.0,
+            },
+        )
+
+        item["cards"].append(card)
+        item["total_cards"] += 1
+
+        if _card_is_active_for_mastercard_stats(card):
+            item["active_cards"] += 1
+        else:
+            item["inactive_cards"] += 1
+
+        try:
+            card_id = int(card.get("card_id") or 0)
+        except Exception:
+            card_id = 0
+
+        if card_id > 0:
+            item["balance_rub"] += float(balances_by_card_id.get(card_id, 0) or 0)
+
+    cabinets = list(grouped.values())
+    cabinets.sort(key=lambda x: int(x.get("owner_id") or 0))
+
+    for index, item in enumerate(cabinets, start=1):
+        item["label"] = f"Мк-{index}"
+
+    return cabinets
+
+
+def _build_mastercard_cabinets_text(*, cabinets: List[Dict[str, Any]]) -> str:
+    """Текст уведомления со списком кабинетов Mastercard без никнеймов."""
+    lines = ["💳 <b>Кабинеты MasterCard:</b>", ""]
+
+    for item in cabinets:
+        label = str(item.get("label") or "Мк")
+        owner_id = int(item.get("owner_id") or 0)
+        total_cards = int(item.get("total_cards") or 0)
+        active_cards = int(item.get("active_cards") or 0)
+        inactive_cards = int(item.get("inactive_cards") or 0)
+        balance_rub = _format_rub_for_mastercard(item.get("balance_rub"))
+
+        lines.append(f"• {_h(label)} — <code>{owner_id}</code>")
+        lines.append(
+            f"  Карт: {total_cards}/{active_cards} | "
+            f"Неактивных: {inactive_cards} | {balance_rub} руб."
+        )
+
+    lines.append("")
+    lines.append("Выберите кабинет ниже.")
+    return "\n".join(lines).rstrip()
+
+
 def _build_cards_choice_text(
     *,
     order_id: int,
@@ -1305,9 +1475,17 @@ def _build_cards_choice_text(
     method: str,
     is_admin: bool,
     cards_count: int,
+    cabinet_label: Optional[str] = None,
+    cabinet_owner_id: Optional[int] = None,
 ) -> str:
     method_label = "СБП" if str(method or "").lower() == "sbp" else "карта"
-    if is_admin:
+
+    if is_admin and cabinet_label and cabinet_owner_id:
+        mode = (
+            f"👑 <b>Режим админа:</b> открыт кабинет "
+            f"<b>{_h(cabinet_label)}</b> — <code>{int(cabinet_owner_id)}</code>."
+        )
+    elif is_admin:
         mode = (
             "👑 <b>Режим админа:</b> показаны карты всех Mastercard "
             "без фильтров суммы, лимитов и пауз."
@@ -1335,16 +1513,21 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
     """
     Выбор Mastercard-карты для передачи реквизитов пользователю.
 
-    Логика прав:
-    - MasterCard видит только свои карты и только те, которые проходят фильтры суммы/лимитов/паузы;
-    - Admin видит карты всех Mastercard без фильтров суммы/лимитов/паузы;
-    - Operator оставлен совместимым со старым сценарием и видит доступные карты по фильтрам.
+    Для админа:
+    - первое нажатие «Карты» показывает кабинеты Mastercard как Мк-1, Мк-2 и т.д.;
+    - в уведомлении не используются username/full_name/telegram-id как имя кабинета;
+    - кнопки кабинетов показывают всего карт / активные карты и текущую сумму;
+    - после выбора кабинета открывается прежний список карт выбранного Mastercard.
+
+    Для Mastercard/Operator:
+    - прежняя логика выбора карт сохранена.
     """
     await callback.answer()
 
     parts = (callback.data or "").split(":")
     user_id: Optional[int] = None
     order_id: Optional[int] = None
+    selected_owner_id: Optional[int] = None
 
     try:
         if len(parts) >= 3:
@@ -1352,6 +1535,9 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
             order_id = int(parts[2])
         else:
             user_id = int(parts[1])
+
+        if len(parts) >= 4:
+            selected_owner_id = int(parts[3])
     except Exception:
         await callback.bot.send_message(callback.from_user.id, "⚠️ Неверные данные.")
         return
@@ -1390,19 +1576,73 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
 
     is_admin = role == "admin"
     is_mastercard = role == "mastercard"
+    cabinet_label: Optional[str] = None
 
     if is_admin:
-        # Админ может выдать любую карту любого Mastercard без проверки лимитов,
-        # min/max, дневных ограничений и пауз.
         try:
-            cards = await get_all_cards()
+            all_cards = await get_all_cards()
         except Exception:
             logger.exception("Не удалось получить все карты для админа")
-            cards = []
+            all_cards = []
+
+        master_cards = [
+            card for card in all_cards
+            if int(card.get("owner_id") or 0) > 0
+        ]
+
+        balances_by_card_id = await _get_mastercard_cards_balance_map(master_cards)
+        cabinets = _build_mastercard_cabinet_stats(master_cards, balances_by_card_id)
+
+        # Первый экран админа: кабинеты Mastercard вместо общего списка карт.
+        if selected_owner_id is None:
+            if not cabinets:
+                await callback.bot.send_message(
+                    callback.from_user.id,
+                    "⚠️ У Mastercard пока нет добавленных карт.",
+                )
+                return
+
+            kb = InlineKeyboardMarkup(row_width=1)
+            for cabinet in cabinets:
+                owner_id = int(cabinet.get("owner_id") or 0)
+                label = str(cabinet.get("label") or "Мк")
+                total_cards = int(cabinet.get("total_cards") or 0)
+                active_cards = int(cabinet.get("active_cards") or 0)
+                balance_rub = _format_rub_for_mastercard(cabinet.get("balance_rub"))
+
+                kb.add(
+                    InlineKeyboardButton(
+                        f"{label} — {total_cards}/{active_cards}, {balance_rub} руб.",
+                        callback_data=f"operator_cards:{user_id}:{order_db_id}:{owner_id}",
+                    )
+                )
+
+            kb.add(
+                InlineKeyboardButton(
+                    "↩️ Назад к заявке",
+                    callback_data=f"operator_open_order:{user_id}:{order_db_id}",
+                )
+            )
+
+            await callback.bot.send_message(
+                callback.from_user.id,
+                _build_mastercard_cabinets_text(cabinets=cabinets),
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
+        cabinet_by_owner = {
+            int(cabinet.get("owner_id") or 0): cabinet
+            for cabinet in cabinets
+        }
+        selected_cabinet = cabinet_by_owner.get(int(selected_owner_id or 0))
+        if selected_cabinet:
+            cabinet_label = str(selected_cabinet.get("label") or "")
 
         cards = [
-            card for card in cards
-            if int(card.get("owner_id") or 0) > 0
+            card for card in master_cards
+            if int(card.get("owner_id") or 0) == int(selected_owner_id or 0)
             and _card_has_required_requisites(card, method)
         ]
     else:
@@ -1421,7 +1661,12 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
         ]
 
     if not cards:
-        if is_admin:
+        if is_admin and selected_owner_id is not None:
+            reason = (
+                "В выбранном кабинете нет карт с нужными реквизитами "
+                "под выбранный способ оплаты."
+            )
+        elif is_admin:
             reason = (
                 "У Mastercard пока нет карт с нужными реквизитами под выбранный способ оплаты."
             )
@@ -1456,6 +1701,14 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
             )
         )
 
+    if is_admin and selected_owner_id is not None:
+        kb.add(
+            InlineKeyboardButton(
+                "↩️ К кабинетам MasterCard",
+                callback_data=f"operator_cards:{user_id}:{order_db_id}",
+            )
+        )
+
     kb.add(
         InlineKeyboardButton(
             "↩️ Назад к заявке",
@@ -1471,6 +1724,8 @@ async def operator_cards(callback: types.CallbackQuery) -> None:
             method=method,
             is_admin=is_admin,
             cards_count=len(cards),
+            cabinet_label=cabinet_label,
+            cabinet_owner_id=selected_owner_id,
         ),
         parse_mode="HTML",
         reply_markup=kb,
@@ -2264,5 +2519,3 @@ def register_operator_handlers(dp: Dispatcher) -> None:
         lambda c: (c.data or "").startswith("user_p2p_agree:"),
         state="*",
     )
-
-
