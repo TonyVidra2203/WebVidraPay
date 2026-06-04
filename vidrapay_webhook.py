@@ -14,8 +14,9 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import settings
-from db.cards import get_active_cards, get_active_cards_for_amount
+from db.cards import get_active_cards, get_active_cards_for_amount, get_card_balance
 from db.connection import get_db
+from db.users import get_user, get_user_mastercard_deposit
 from services.nirvana import NirvanaAPIError
 from services.nirvana_payin import create_nirvana_ns_pk_qr_order
 from services.vidrapay_payin import parse_vidrapay_token
@@ -134,6 +135,91 @@ def _method_key_from_db_value(payment_method: Any) -> str:
     if current.startswith("vidrapay_"):
         return current.replace("vidrapay_", "", 1)
     return current
+
+
+
+def _role_is_mastercard(role: Any) -> bool:
+    return str(role or "").strip().lower() == "mastercard"
+
+
+async def _get_mastercard_owner_card_ids(owner_id: int) -> List[int]:
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT card_id
+          FROM cards
+         WHERE owner_id = ?
+        """,
+        (int(owner_id),),
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+
+    result: List[int] = []
+    for row in rows:
+        try:
+            card_id = int(row[0] or 0)
+        except Exception:
+            card_id = 0
+        if card_id > 0:
+            result.append(card_id)
+
+    return result
+
+
+async def _get_mastercard_owner_cards_balance(owner_id: int) -> float:
+    total = 0.0
+    for card_id in await _get_mastercard_owner_card_ids(int(owner_id)):
+        try:
+            total += float(await get_card_balance(card_id) or 0.0)
+        except Exception:
+            continue
+    return float(total)
+
+
+async def _mastercard_owner_can_accept_vidrapay_order(
+    owner_id: int,
+    *,
+    order_amount_rub: float,
+) -> bool:
+    """
+    Проверяет общий депозит Mastercard для выдачи карт в VidraPay.
+
+    Карты владельца показываются только если:
+    current_cards_balance + order_amount_rub < mastercard_deposit_rub.
+    Если депозит не задан, карты владельца не показываются.
+    """
+    try:
+        owner_id = int(owner_id)
+    except Exception:
+        owner_id = 0
+
+    if owner_id <= 0:
+        return False
+
+    owner = await get_user(owner_id)
+    if not owner or not _role_is_mastercard(owner.get("role")):
+        return False
+
+    try:
+        deposit = float(await get_user_mastercard_deposit(owner_id) or 0.0)
+    except Exception:
+        deposit = 0.0
+
+    if deposit <= 0:
+        return False
+
+    try:
+        order_amount = float(order_amount_rub or 0.0)
+    except Exception:
+        order_amount = 0.0
+
+    if order_amount < 0:
+        order_amount = 0.0
+
+    cards_balance = await _get_mastercard_owner_cards_balance(owner_id)
+
+    return bool(cards_balance < deposit and (cards_balance + order_amount) < deposit)
 
 
 async def _get_p2p_order(order_id: int, user_id: int) -> Optional[Dict[str, Any]]:
@@ -624,6 +710,47 @@ async def _filter_cards_by_vidrapay_distribution(
             await cur_order.close()
             if row_order:
                 order_amount_rub = float(row_order[0] or 0.0)
+
+    cards_by_owner_allowed: Dict[int, bool] = {}
+    deposit_valid_cards: List[Dict[str, Any]] = []
+    deposit_card_ids: List[int] = []
+
+    for card in valid_cards:
+        try:
+            owner_id = int(card.get("owner_id") or 0)
+            card_id = int(card.get("card_id") or 0)
+        except Exception:
+            owner_id = 0
+            card_id = 0
+
+        if owner_id <= 0 or card_id <= 0:
+            continue
+
+        if owner_id not in cards_by_owner_allowed:
+            try:
+                cards_by_owner_allowed[owner_id] = await _mastercard_owner_can_accept_vidrapay_order(
+                    owner_id,
+                    order_amount_rub=order_amount_rub,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to check Mastercard deposit owner_id=%s order_id=%s",
+                    owner_id,
+                    order_id,
+                )
+                cards_by_owner_allowed[owner_id] = False
+
+        if not cards_by_owner_allowed.get(owner_id):
+            continue
+
+        deposit_valid_cards.append(card)
+        deposit_card_ids.append(card_id)
+
+    valid_cards = deposit_valid_cards
+    card_ids = deposit_card_ids
+
+    if not valid_cards:
+        return []
 
     placeholders = ", ".join("?" for _ in card_ids)
 

@@ -11,7 +11,7 @@ from db.cards import (
     set_card_active,
 )
 from db.connection import get_db
-from db.users import get_all_users, get_user
+from db.users import get_all_users, get_user, get_user_mastercard_deposit
 
 
 NSK_TZ = ZoneInfo("Asia/Novosibirsk")
@@ -146,6 +146,116 @@ async def get_mastercard_user_ids(*, only_active_session_ids: Optional[set[int]]
     return result
 
 
+
+async def _get_owner_card_ids(owner_id: int) -> List[int]:
+    """
+    Возвращает все card_id пользователя Mastercard.
+
+    Берём все карты владельца, а не только активные: депозит ограничивает общий
+    текущий остаток на картах Mastercard.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT card_id
+          FROM cards
+         WHERE owner_id = ?
+        """,
+        (int(owner_id),),
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+
+    result: List[int] = []
+    for row in rows:
+        try:
+            card_id = int(row[0] or 0)
+        except Exception:
+            card_id = 0
+        if card_id > 0:
+            result.append(card_id)
+
+    return result
+
+
+async def get_mastercard_owner_cards_balance(owner_id: int) -> float:
+    """
+    Считает текущее состояние на всех картах Mastercard-владельца.
+    """
+    total = 0.0
+
+    for card_id in await _get_owner_card_ids(int(owner_id)):
+        try:
+            total += float(await get_card_balance(card_id) or 0.0)
+        except Exception:
+            continue
+
+    return float(total)
+
+
+async def get_mastercard_owner_deposit_state(
+    owner_id: int,
+    *,
+    pending_amount_rub: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Возвращает состояние депозита Mastercard-владельца.
+
+    can_accept = True только если:
+    - депозит задан и больше 0;
+    - текущий баланс карт меньше депозита;
+    - текущий баланс карт + сумма новой заявки строго меньше депозита.
+    """
+    owner_id = int(owner_id)
+    try:
+        pending_amount = float(pending_amount_rub or 0.0)
+    except Exception:
+        pending_amount = 0.0
+
+    if pending_amount < 0:
+        pending_amount = 0.0
+
+    deposit = float(await get_user_mastercard_deposit(owner_id) or 0.0)
+    cards_balance = float(await get_mastercard_owner_cards_balance(owner_id) or 0.0)
+    projected_balance = cards_balance + pending_amount
+
+    can_accept = bool(
+        deposit > 0
+        and cards_balance < deposit
+        and projected_balance < deposit
+    )
+
+    if deposit <= 0:
+        reason = "Депозит Mastercard не задан."
+    elif cards_balance >= deposit:
+        reason = f"Текущее состояние на картах {_fmt_money(cards_balance)} достигло депозита {_fmt_money(deposit)}."
+    elif projected_balance >= deposit:
+        reason = (
+            f"Сумма заявки пробивает депозит: "
+            f"{_fmt_money(cards_balance)} + {_fmt_money(pending_amount)} >= {_fmt_money(deposit)}."
+        )
+    else:
+        reason = ""
+
+    return {
+        "owner_id": owner_id,
+        "deposit": deposit,
+        "cards_balance": cards_balance,
+        "pending_amount": pending_amount,
+        "projected_balance": projected_balance,
+        "can_accept": can_accept,
+        "reason": reason,
+    }
+
+
+async def mastercard_owner_can_accept_amount(owner_id: int, amount_rub: float) -> bool:
+    state = await get_mastercard_owner_deposit_state(
+        int(owner_id),
+        pending_amount_rub=float(amount_rub or 0.0),
+    )
+    return bool(state.get("can_accept"))
+
+
 async def _get_card_today_limit_stats(card_id: int) -> Dict[str, Any]:
     """
     Считает дневную статистику карты по завершённым p2p_orders.
@@ -199,6 +309,16 @@ async def enrich_card_with_mastercard_limits(card: Dict[str, Any]) -> Dict[str, 
     balance = await get_card_balance(card_id)
 
     result["_balance"] = float(balance or 0.0)
+
+    owner_id = int(result.get("owner_id") or 0)
+    if owner_id > 0:
+        deposit_state = await get_mastercard_owner_deposit_state(owner_id)
+        result["_owner_cards_balance"] = float(deposit_state.get("cards_balance") or 0.0)
+        result["_owner_deposit"] = float(deposit_state.get("deposit") or 0.0)
+    else:
+        result["_owner_cards_balance"] = 0.0
+        result["_owner_deposit"] = 0.0
+
     result["_today_count"] = int(stats.get("count") or 0)
     result["_today_sum"] = float(stats.get("sum") or 0.0)
     result["_last_completed_nsk"] = stats.get("last")
@@ -262,6 +382,9 @@ async def get_available_mastercard_cards_for_amount(amount_rub: float) -> List[D
         if owner_id <= 0 or owner_id not in mastercard_ids:
             continue
 
+        if not await mastercard_owner_can_accept_amount(owner_id, amount):
+            continue
+
         card = await refresh_mastercard_card_limit_state(raw_card)
 
         if not bool(card.get("is_active", True)):
@@ -304,6 +427,14 @@ async def get_mastercard_card_for_issue(card_id: int, amount_rub: float) -> Tupl
         return None, "Владелец карты больше не имеет роль Mastercard."
 
     amount = float(amount_rub or 0)
+
+    deposit_state = await get_mastercard_owner_deposit_state(
+        owner_id,
+        pending_amount_rub=amount,
+    )
+    if not bool(deposit_state.get("can_accept")):
+        reason = str(deposit_state.get("reason") or "").strip()
+        return None, reason or "Карты Mastercard-владельца недоступны по депозиту."
 
     min_amount = card.get("min_amount_rub")
     if min_amount is not None and float(min_amount or 0) > 0 and amount < float(min_amount):

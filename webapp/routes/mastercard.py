@@ -20,7 +20,7 @@ from db.cards import (
     update_card,
 )
 from db.p2p import get_completed_orders_by_master
-from db.users import get_user
+from db.users import get_user, get_user_mastercard_deposit, set_user_mastercard_deposit
 
 router = APIRouter(prefix="/mastercard", tags=["mastercard-web"])
 
@@ -929,7 +929,7 @@ async def _render_access_denied() -> HTMLResponse:
       html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
       html.is-android .title{{font-size:20px!important}}
       html.is-android .subtitle{{font-size:11.5px!important}}
-      html.is-android .top-balance{{min-width:108px!important}}
+      html.is-android .top-balance{{min-width:138px!important}}
       html.is-android .top-balance b{{font-size:25px!important}}
       html.is-android .panel{{border-radius:24px!important}}
       html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
@@ -1010,7 +1010,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .subtitle{{margin-top:5px;color:var(--muted);font-size:12.5px;line-height:1.25}}
     .top-balance{{
       flex:0 0 auto;
-      min-width:118px;
+      min-width:156px;
       text-align:right;
       padding:0 1px 0 0;
     }}
@@ -1156,6 +1156,27 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .withdraw-form{{display:none}}
     .withdraw-form.active{{display:block}}
     .withdraw-note{{color:var(--muted);font-size:12.5px;line-height:1.4;margin-bottom:10px}}
+    .admin-deposit-mini{{
+      flex:0 0 auto;
+      min-height:30px;
+      border:1px solid rgba(214,179,95,.20);
+      border-radius:13px;
+      background:rgba(214,179,95,.055);
+      color:rgba(225,196,111,.86);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:5px;
+      padding:0 9px;
+      font-size:11px;
+      line-height:1;
+      font-weight:950;
+      white-space:nowrap;
+    }}
+    .admin-deposit-mini span{{font-size:13px;line-height:1}}
+    .admin-deposit-mini b{{font-size:10px;line-height:1;text-transform:uppercase;letter-spacing:.22px;color:rgba(246,243,234,.58)}}
+    .admin-deposit-mini:active{{transform:scale(.98)}}
+    .admin-deposit-box{{max-width:390px}}
     .stats-only{{display:grid;gap:13px}}
     .stat-block{{padding:13px;border-radius:22px;border:1px solid rgba(255,255,255,.15);background:linear-gradient(180deg,#16161a,#0d0d10)}}
     .stat-block-title{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;font-size:14px;font-weight:950;color:var(--text)}}
@@ -1192,7 +1213,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .logo{{width:44px;height:44px;flex-basis:44px;border-radius:15px}}
       .title{{font-size:21px}}
       .subtitle{{font-size:12px}}
-      .top-balance{{min-width:112px;padding-top:1px}}
+      .top-balance{{min-width:142px;padding-top:1px}}
       .top-balance span{{font-size:9.2px;margin-bottom:5px;color:rgba(246,243,234,.68)}}
       .top-balance b{{font-size:27px;color:#e6c76e;text-shadow:0 0 16px rgba(214,179,95,.42)}}
       .panel{{border-color:rgba(255,255,255,.16);background:#0b0b0d}}
@@ -1232,7 +1253,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .section-head{{align-items:center}}
       .view-switch{{min-width:126px}}
       .view-switch-btn{{font-size:11px;padding:0 7px}}
-      .top-balance{{min-width:104px}}
+      .top-balance{{min-width:132px}}
       .top-balance span{{font-size:8.5px}}
       .top-balance b{{font-size:24px}}
     }}
@@ -1290,7 +1311,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
       html.is-android .title{{font-size:20px!important}}
       html.is-android .subtitle{{font-size:11.5px!important}}
-      html.is-android .top-balance{{min-width:108px!important}}
+      html.is-android .top-balance{{min-width:138px!important}}
       html.is-android .top-balance b{{font-size:25px!important}}
       html.is-android .panel{{border-radius:24px!important}}
       html.is-android .nav{{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;padding:8px!important}}
@@ -1327,8 +1348,8 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
           <div class="title">MasterCard</div>
           <div class="subtitle">Управление картами</div>
         </div>
-        <div class="top-balance" aria-label="Сумма на всех картах">
-          <span>Баланс карт</span>
+        <div class="top-balance" aria-label="Баланс карт и депозит">
+          <span>Баланс / депозит</span>
           <b>{_esc(header_amount)}</b>
         </div>
       </header>
@@ -1419,6 +1440,19 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       var modalTitle = document.getElementById('editModalTitle');
       var withdrawModal = document.getElementById('withdrawModal');
       var withdrawModalTitle = document.getElementById('withdrawModalTitle');
+      var depositModal = document.getElementById('depositModal');
+      function openDepositModal() {{
+        if (!depositModal) return;
+        depositModal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+        var input = depositModal.querySelector('input[name="deposit_rub"]');
+        if (input) setTimeout(function() {{ input.focus(); input.select(); }}, 120);
+      }}
+      function closeDepositModal() {{
+        if (!depositModal) return;
+        depositModal.classList.remove('open');
+        document.body.style.overflow = '';
+      }}
       function openEditModal(cardId, title) {{
         if (!modal) return;
         document.querySelectorAll('.modal-card-form').forEach(function(item) {{ item.classList.remove('active'); }});
@@ -1475,9 +1509,12 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       }});
       document.querySelectorAll('[data-modal-close]').forEach(function(btn) {{ btn.addEventListener('click', closeEditModal); }});
       document.querySelectorAll('[data-withdraw-close]').forEach(function(btn) {{ btn.addEventListener('click', closeWithdrawModal); }});
+      document.querySelectorAll('[data-deposit-open]').forEach(function(btn) {{ btn.addEventListener('click', openDepositModal); }});
+      document.querySelectorAll('[data-deposit-close]').forEach(function(btn) {{ btn.addEventListener('click', closeDepositModal); }});
       if (modal) modal.addEventListener('click', function(event) {{ if (event.target === modal) closeEditModal(); }});
       if (withdrawModal) withdrawModal.addEventListener('click', function(event) {{ if (event.target === withdrawModal) closeWithdrawModal(); }});
-      document.addEventListener('keydown', function(event) {{ if (event.key === 'Escape') {{ closeEditModal(); closeWithdrawModal(); }} }});
+      if (depositModal) depositModal.addEventListener('click', function(event) {{ if (event.target === depositModal) closeDepositModal(); }});
+      document.addEventListener('keydown', function(event) {{ if (event.key === 'Escape') {{ closeEditModal(); closeWithdrawModal(); closeDepositModal(); }} }});
       function onlyDigits(value) {{ return String(value || '').replace(/\\D/g, ''); }}
       function formatCardInput(input) {{
         var digits = onlyDigits(input.value).slice(0, 16);
@@ -1562,6 +1599,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
 
     cards = await get_cards_by_owner(user_id)
     completed_orders = await get_completed_orders_by_master(user_id)
+    mastercard_deposit = float(await get_user_mastercard_deposit(int(user_id)) or 0.0)
 
     owned_card_ids = {
         int(card.get("card_id") or 0)
@@ -1663,6 +1701,57 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
         enriched_cards.append(card)
 
     inactive_count = max(len(enriched_cards) - active_count, 0)
+    deposit_left = max(float(mastercard_deposit or 0.0) - float(total_balance or 0.0), 0.0)
+    deposit_progress_text = (
+        f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}"
+        if mastercard_deposit > 0 else
+        f"{_fmt_compact_money(total_balance)} / 0"
+    )
+    deposit_status_text = (
+        "Депозит достигнут — карты не будут показываться в VidraPay."
+        if mastercard_deposit > 0 and total_balance >= mastercard_deposit else
+        "Новые заявки будут учитываться заранее: баланс карт + сумма заявки не должен достигать депозит."
+        if mastercard_deposit > 0 else
+        "Депозит не задан — карты не будут показываться в VidraPay до установки депозита."
+    )
+    deposit_panel_html = ""
+    admin_deposit_button_html = ""
+    admin_deposit_modal_html = ""
+    if admin_mode and admin_id:
+        admin_deposit_button_html = f"""
+          <button class="admin-deposit-mini" type="button" data-deposit-open="1" aria-label="Установить депозит Mastercard">
+            <span>₽</span>
+            <b>депозит</b>
+          </button>
+        """
+        admin_deposit_modal_html = f"""
+          <div class="modal-backdrop" id="depositModal" aria-hidden="true">
+            <div class="modal-box admin-deposit-box" role="dialog" aria-modal="true">
+              <div class="modal-head">
+                <div class="modal-title">Депозит Mastercard</div>
+                <button class="modal-close" type="button" data-deposit-close="1" aria-label="Закрыть">×</button>
+              </div>
+              <div class="modal-content">
+                <form class="form" method="post" action="/mastercard/deposit/update">
+                  <input type="hidden" name="user_id" value="{int(user_id)}">
+                  <input type="hidden" name="admin_id" value="{int(admin_id)}">
+                  <div class="field-box">
+                    <div class="box-title">Админ</div>
+                    <label>Депозит, руб.<input name="deposit_rub" inputmode="decimal" value="{_fmt_compact_money(mastercard_deposit)}" placeholder="Например: 20000" required></label>
+                    <div class="help">Видно только админу. VidraPay будет скрывать карты, если баланс карт + сумма новой заявки достигает депозита.</div>
+                  </div>
+                  <div class="quick-stats" style="margin-bottom:0">
+                    <div class="quick-stat"><div class="quick-label">Баланс / депозит</div><div class="quick-value">{_esc(deposit_progress_text)}</div></div>
+                    <div class="quick-stat"><div class="quick-label">Остаток</div><div class="quick-value">{_fmt_money(deposit_left)}</div></div>
+                  </div>
+                  <div class="form-actions" style="margin-top:11px">
+                    <button class="btn" type="submit">Сохранить</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        """
 
     if enriched_cards:
         tiles_html = ""
@@ -1991,12 +2080,14 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
           <div class="section-head">
             <div class="section-title">Мои карты</div>
             <div class="head-actions">
+              {admin_deposit_button_html}
               <div class="view-switch" aria-label="Вид карт">
                 <button class="view-switch-btn active" type="button" data-view-mode="swipe">Свайп</button>
                 <button class="view-switch-btn" type="button" data-view-mode="grid">Плитка</button>
               </div>
             </div>
           </div>
+          {deposit_panel_html}
           <div class="cards-carousel" id="cardsCarousel">{carousel_html}</div>
           <div class="cards-grid" id="cardsGrid">{tiles_html}</div>
         </section>
@@ -2131,11 +2222,48 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
           <div class="modal-content">{withdraw_modal_html}</div>
         </div>
       </div>
+
+      {admin_deposit_modal_html}
       </section>
     """
 
-    return _page("MasterCard", body, _fmt_money(total_balance))
+    return _page("MasterCard", body, f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}")
 
+
+
+@router.post("/deposit/update")
+async def mastercard_update_deposit(
+        user_id: int = Form(...),
+        admin_id: str = Form(""),
+        deposit_rub: str = Form(""),
+):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
+    if not await _is_mastercard_user(int(user_id)):
+        return await _render_access_denied()
+
+    if not admin_actor_id:
+        return await _render_access_denied()
+
+    try:
+        value = _to_float_or_none(deposit_rub)
+    except Exception:
+        return _alert_redirect(
+            int(user_id),
+            "Введите корректную сумму депозита.",
+            "cards",
+            admin_id=admin_actor_id,
+        )
+
+    await set_user_mastercard_deposit(int(user_id), float(value or 0.0))
+    return _redirect(int(user_id), "cards", admin_id=admin_actor_id)
 
 
 @router.post("/audit/clear")

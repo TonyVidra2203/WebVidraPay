@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS users (
     referral_link      TEXT,
     commission_percent REAL,
     binance_verified   INTEGER NOT NULL DEFAULT 0,
-    web_password       TEXT UNIQUE
+    web_password       TEXT UNIQUE,
+    mastercard_deposit_rub REAL NOT NULL DEFAULT 0
 );
 """
 
@@ -47,7 +48,8 @@ SELECT
     is_active, referrer_id, referral_link,
     commission_percent,
     binance_verified,
-    web_password
+    web_password,
+    mastercard_deposit_rub
 FROM users
 """
 
@@ -83,6 +85,10 @@ async def init_users_db() -> None:
             await db.execute("ALTER TABLE users ADD COLUMN usdt_trc20_wallet TEXT")
         if "web_password" not in existing:
             await db.execute("ALTER TABLE users ADD COLUMN web_password TEXT")
+        if "mastercard_deposit_rub" not in existing:
+            await db.execute(
+                "ALTER TABLE users ADD COLUMN mastercard_deposit_rub REAL NOT NULL DEFAULT 0"
+            )
 
     await db.commit()
 
@@ -106,6 +112,7 @@ async def _migrate_users_table_cleanup(
         "commission_percent",
         "binance_verified",
         "web_password",
+        "mastercard_deposit_rub",
     ]
 
     common_columns: List[str] = [col for col in desired_columns if col in existing_columns]
@@ -325,6 +332,50 @@ async def get_user_commission(telegram_id: int) -> Optional[float]:
         (telegram_id,),
     )
     return row.get("commission_percent") if row else None
+
+
+async def set_user_mastercard_deposit(telegram_id: int, amount_rub: float) -> None:
+    """
+    Сохраняет депозит пользователя Mastercard в рублях.
+
+    Депозит используется как общий потолок выдачи его карт в VidraPay:
+    если текущий баланс на картах + сумма новой заявки >= депозит,
+    карты этого Mastercard не должны выдаваться.
+    """
+    await init_users_db()
+
+    try:
+        amount = float(amount_rub or 0.0)
+    except Exception:
+        amount = 0.0
+
+    if amount < 0:
+        amount = 0.0
+
+    await _execute(
+        "UPDATE users SET mastercard_deposit_rub = ? WHERE telegram_id = ?",
+        (amount, int(telegram_id)),
+    )
+
+
+async def get_user_mastercard_deposit(telegram_id: int) -> float:
+    """
+    Возвращает депозит пользователя Mastercard в рублях.
+    Если депозит не задан или колонка появилась только после миграции — возвращает 0.
+    """
+    await init_users_db()
+    row = await _fetchone(
+        "SELECT mastercard_deposit_rub FROM users WHERE telegram_id = ?",
+        (int(telegram_id),),
+    )
+
+    if not row:
+        return 0.0
+
+    try:
+        return float(row.get("mastercard_deposit_rub") or 0.0)
+    except Exception:
+        return 0.0
 
 
 async def set_binance_verified(telegram_id: int, verified: bool) -> None:
