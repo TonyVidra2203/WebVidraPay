@@ -17,12 +17,14 @@ from handlers.mastercard import register_mastercard_handlers
 
 def register_all(dp: Dispatcher):
     """Главная точка регистрации всех обработчиков"""
-
     register_start(dp)
+
+    register_admin_handlers(dp)
+
     register_mastercard_handlers(dp)
     register_chat_handlers(dp)
     register_buy_handlers(dp)
-    register_admin_handlers(dp)
+
     register_profile_handlers(dp)
     register_support_handlers(dp)
     register_accounting_handlers(dp)

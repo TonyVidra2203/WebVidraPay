@@ -691,7 +691,7 @@ async def admin_cards_message(message: types.Message, state: FSMContext) -> None
 
     for idx, mc_user in enumerate(mastercard_users, start=1):
         owner_id = int(mc_user["telegram_id"])
-        title = f"Мк-{idx}"
+        title = f"Мк({idx})"
 
         try:
             cards = await get_cards_by_owner(owner_id)
@@ -700,7 +700,6 @@ async def admin_cards_message(message: types.Message, state: FSMContext) -> None
 
         total_count = len(cards)
         active_count = sum(1 for c in cards if c.get("is_active", True))
-        inactive_count = total_count - active_count
 
         total_balance = 0.0
         for card in cards:
@@ -711,24 +710,18 @@ async def admin_cards_message(message: types.Message, state: FSMContext) -> None
 
         balance_text = f"{int(total_balance)} руб."
 
-        lines.append(
-            f"• {title} — {owner_id}\n"
-            f"  Всего карт: {total_count}\n"
-            f"  Активных: {active_count}\n"
-            f"  Неактивных: {inactive_count}\n"
-            f"  Сумма на картах: {balance_text}"
-        )
+        lines.append(f"• {title} — {owner_id} — {total_count}/{active_count}")
 
         kb.add(
             InlineKeyboardButton(
-                f"{title} — {total_count}/{active_count}, {balance_text}",
+                f"{title} — {balance_text}",
                 callback_data=f"mc_admin_open:{owner_id}",
             )
         )
 
     await message.bot.send_message(
         message.chat.id,
-        "\n\n".join(lines),
+        "\n".join(lines),
         reply_markup=kb,
     )
 
