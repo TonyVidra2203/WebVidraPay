@@ -38,12 +38,12 @@ async def send_welcome(
     """
     keyboard = buy_keyboard(mastercard_url=mastercard_url)
 
-    work_btn = InlineKeyboardButton(
-        text="‼️Заработок на картах‼️",
+    partner_btn = InlineKeyboardButton(
+        text="‼️Стать партнёром Выдры‼️",
         callback_data="work_info"
     )
 
-    keyboard.inline_keyboard.insert(0, [work_btn])
+    keyboard.inline_keyboard.insert(0, [partner_btn])
 
     with open("assets/menu.jpg", "rb") as photo:
         await bot.send_photo(
@@ -55,8 +55,8 @@ async def send_welcome(
 
 async def work_info_callback(callback_query: types.CallbackQuery) -> None:
     """
-    При нажатии 'Работа':
-    удаляет главное меню и показывает объявление с кнопкой 'Назад'.
+    При нажатии 'Стать партнёром':
+    удаляет главное меню и показывает партнёрскую схему с кнопкой 'Назад'.
     """
     await callback_query.answer()
 
@@ -66,22 +66,8 @@ async def work_info_callback(callback_query: types.CallbackQuery) -> None:
         pass
 
     text = (
-        "💳 <b>ИЩЕМ ДЕРЖАТЕЛЕЙ КАРТ ДЛЯ ЗАРАБОТКА</b> 💸\n\n"
-        "Есть своя лишняя банковская карта?\n"
-        "Начни зарабатывать прямо со своего телефона через Telegram-бота.\n\n"
-        "✅ Свободный график\n"
-        "✅ Выплаты каждый день\n"
-        "✅ Всё через удобный бот\n"
-        "✅ Личный кабинет + статистика\n"
-        "✅ Сам контролируешь лимиты и активность карт\n\n"
-        "<b>Что нужно:</b>\n"
-        "— карта банка РФ\n"
-        "— Telegram\n"
-        "— 18+\n"
-        "— быть на связи\n\n"
-        "💰 Доход зависит от активности — некоторые участники делают хороший дополнительный заработок уже в первые дни.\n\n"
-        "Пиши в тех. поддержку!\n"
-        "P.S. Необходим залог от 10к рублей."
+        "Подробнее у нас на канале:\n"
+        "https://t.me/VidraObmenChannel/43"
     )
 
     keyboard = InlineKeyboardMarkup(row_width=1)
@@ -89,18 +75,28 @@ async def work_info_callback(callback_query: types.CallbackQuery) -> None:
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")
     )
 
-    await callback_query.message.bot.send_message(
-        chat_id=callback_query.from_user.id,
-        text=text,
-        reply_markup=keyboard,
-        parse_mode="HTML",
-    )
+    try:
+        with open("assets/partner_info.png", "rb") as photo:
+            await callback_query.message.bot.send_photo(
+                chat_id=callback_query.from_user.id,
+                photo=photo,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+    except FileNotFoundError:
+        await callback_query.message.bot.send_message(
+            chat_id=callback_query.from_user.id,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
 
 
 async def back_to_main_menu_callback(callback_query: types.CallbackQuery) -> None:
     """
     При нажатии 'Назад':
-    удаляет объявление и возвращает классическое главное меню.
+    удаляет партнёрский экран и возвращает классическое главное меню.
     """
     await callback_query.answer()
 

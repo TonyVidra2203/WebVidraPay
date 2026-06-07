@@ -148,13 +148,6 @@ def buy_keyboard(mastercard_url: Optional[str] = None) -> InlineKeyboardMarkup:
 
     kb.add(
         InlineKeyboardButton(
-            "Web-версия",
-            url="https://webvidra.com",
-        )
-    )
-
-    kb.add(
-        InlineKeyboardButton(
             "Купить BTC (Bitcoin)",
             callback_data=Callback.P2P_ASSISTANT,
         )
@@ -175,6 +168,13 @@ def buy_keyboard(mastercard_url: Optional[str] = None) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             "Купить XMR (Monero)",
             callback_data=Callback.P2P_ASSISTANT_XMR,
+        )
+    )
+
+    kb.add(
+        InlineKeyboardButton(
+            "🪐 Web-версия",
+            url="https://webvidra.com",
         )
     )
 
@@ -204,6 +204,7 @@ def buy_keyboard(mastercard_url: Optional[str] = None) -> InlineKeyboardMarkup:
         )
 
     return kb
+
 
 
 def cancel_buy_keyboard() -> InlineKeyboardMarkup:
