@@ -148,7 +148,7 @@ def buy_keyboard(mastercard_url: Optional[str] = None) -> InlineKeyboardMarkup:
 
     kb.add(
         InlineKeyboardButton(
-            "🔥Web-версия — Скидка 20%🔥",
+            "Web-версия",
             url="https://webvidra.com",
         )
     )

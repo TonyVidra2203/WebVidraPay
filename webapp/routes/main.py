@@ -376,9 +376,15 @@ async def _build_order_quote_for_web(
         raise RuntimeError("Не удалось получить курс USD→₽.")
     base_rate = float(base_rate)
 
-    # Для WEB-версии комиссия фиксированная: 20% на любую сумму.
-    web_commission = 20.0
-    commission = web_commission
+    # Комиссия WEB-версии как в P2P:
+    # до 10000 ₽ — 25%
+    # от 10000 ₽ — 23%
+    calculation_rub_amount = float(rub_value) if has_rub else 0.0
+
+    if calculation_rub_amount >= 10000:
+        commission = 23.0
+    else:
+        commission = 25.0
 
     if asset == "USDT":
         if has_rub:
@@ -1655,3 +1661,7 @@ async def cancel_order(request: Request, order_id: int):
 
     except Exception:
         return RedirectResponse(url=redirect_after_cancel, status_code=303)
+
+
+
+
