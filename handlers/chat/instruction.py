@@ -1133,6 +1133,10 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         f"💳 <b>Карта:</b> <code>{html_escape(card)}</code>\n"
         f"🏦 <b>Банк:</b> {html_escape(bank)}\n"
         f"💸 <b>Сумма:</b> <b>{html_escape(amount_rub)} ₽</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 <b>Монета:</b> <b>{html_escape(asset)}</b>\n"
+        f"📦 <b>К выдаче:</b> <b>{html_escape(amount_str)} {html_escape(asset)}</b>\n"
+        f"🏷 <b>Кошелёк:</b> <code>{html_escape(wallet or '—')}</code>\n"
         "━━━━━━━━━━━━━━━━━━"
     )
 
@@ -1886,6 +1890,7 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
                 token=public_id,
                 db_order_id=db_order_id,
                 asset=asset,
+                exchange_started_by_id=operator_id,
             )
         )
 
@@ -2720,6 +2725,7 @@ async def track_ff_order_status(
     token: str,
     db_order_id: int,
     asset: Optional[str] = None,
+    exchange_started_by_id: Optional[int] = None,
 ) -> None:
     from db.p2p import get_order_by_id
 
@@ -3006,10 +3012,33 @@ async def track_ff_order_status(
                     f"{tx_link_line}"
                 )
 
-                if operator_id:
+                completed_notify_recipient_ids: List[int] = []
+
+                # operator_id в заявке не всегда равен Mastercard, который нажал
+                # «Готово — начать обмен». Поэтому финальное уведомление отправляем:
+                # 1) оператору из заявки, если он есть;
+                # 2) тому, кто фактически запустил автообмен кнопкой ff_ready;
+                # 3) владельцу Mastercard-реквизита по card_id заявки.
+                for raw_recipient_id in (operator_id, exchange_started_by_id):
+                    with suppress(Exception):
+                        recipient_id = int(raw_recipient_id)
+                        if recipient_id > 0 and recipient_id not in completed_notify_recipient_ids:
+                            completed_notify_recipient_ids.append(recipient_id)
+
+                mastercard_owner_id: Optional[int] = None
+                with suppress(Exception):
+                    mastercard_owner_id = await _get_mastercard_owner_id_for_order(current)
+
+                if mastercard_owner_id:
+                    with suppress(Exception):
+                        mc_id = int(mastercard_owner_id)
+                        if mc_id > 0 and mc_id not in completed_notify_recipient_ids:
+                            completed_notify_recipient_ids.append(mc_id)
+
+                for recipient_id in completed_notify_recipient_ids:
                     with suppress(Exception):
                         await bot.send_message(
-                            int(operator_id),
+                            int(recipient_id),
                             msg,
                             parse_mode="HTML",
                             disable_web_page_preview=True,
@@ -3018,7 +3047,7 @@ async def track_ff_order_status(
                 await _notify_admin(
                     bot,
                     msg,
-                    exclude_ids=[int(operator_id)] if operator_id else None,
+                    exclude_ids=completed_notify_recipient_ids,
                 )
 
                 with suppress(Exception):

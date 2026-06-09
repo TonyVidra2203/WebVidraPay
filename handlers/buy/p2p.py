@@ -76,7 +76,7 @@ AMOUNT_INPUT_TEMPLATE = (
     "Пример: <b>{example_asset}</b> или <b>{example_rub}</b>"
 )
 
-MIN_RUB_EXCHANGE = 3000.0
+MIN_RUB_EXCHANGE = 1200.0
 AKKULA_ONLY_MAX_RUB = 5000
 EPHEMERAL_DELETE_SEC = 3
 USDT_FIXED_COMMISSION_P2P = 20.0
