@@ -2096,7 +2096,7 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         kb = InlineKeyboardMarkup()
         kb.row(
             InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{real_order_id}:{order_user_id}"),
-            InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{real_order_id}"),
+            InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{order_user_id}:{real_order_id}"),
         )
         kb.add(
             InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{real_order_id}:{order_user_id}")

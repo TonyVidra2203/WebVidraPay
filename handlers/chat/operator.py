@@ -3,6 +3,7 @@
 # -----------------------------------------------------------------------------
 import logging
 import math
+from contextlib import suppress
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 MAX_LINES: int = 14
 
-# sms_threads: order_id -> { user_msg_id: int, op_msg_id: int, history: list }
+# sms_threads: order_id -> { user_msg_id: int, op_msg_ids: {worker_id: message_id}, worker_ids: set, history: list }
 sms_threads: Dict[int, Dict[str, Any]] = {}
 
 # Ожидания ввода от оператора/пользователя
@@ -231,8 +232,8 @@ def _render_sms_card(order_id: int) -> str:
     lines: List[str] = [
         f"🧾 Заявка №{order_id}",
         "",
-        "SMS-чат",
-        "─────",
+        "SMS-чат поддержки по заявке",
+        "─────────",
     ]
 
     if not history:
@@ -254,7 +255,7 @@ def _render_sms_card(order_id: int) -> str:
             display = "Пользователь" if role != "op" else "Оператор"
 
         text = text or ""
-        display_name = "Оператор" if role == "op" else (display or "Пользователь")
+        display_name = "Оператор" if role == "op" else "Пользователь"
 
         if groups and groups[-1][0] == role and groups[-1][1] == display_name:
             # Продолжаем текущий блок того же отправителя
@@ -288,32 +289,35 @@ def _render_sms_card(order_id: int) -> str:
 # -----------------------------------------------------------------------------
 # Раздел: Клавиатуры
 # -----------------------------------------------------------------------------
-def _kb_user_chat(op_id: int, order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для пользователя в SMS-чате."""
+def _kb_user_chat(order_id: int, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Клавиатура для пользователя в SMS-чате по заявке."""
+    close_user_id = int(user_id or 0)
     kb = InlineKeyboardMarkup()
     kb.add(
         InlineKeyboardButton(
             "💬 Ответить",
-            callback_data=f"reply_to_operator:{op_id}:{order_id}",
+            callback_data=f"reply_to_operator:0:{order_id}",
+        )
+    )
+    kb.add(
+        InlineKeyboardButton(
+            "🚪 Закрыть чат",
+            callback_data=f"close_sms_chat:{close_user_id}:{order_id}",
         )
     )
     return kb
 
 
 def _kb_op_chat(user_id: int, order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для оператора в SMS-чате."""
+    """Клавиатура для админа/Mastercard в SMS-чате по заявке."""
     kb = InlineKeyboardMarkup()
-    kb.row(
+    kb.add(
         InlineKeyboardButton(
             "💬 Ответить",
             callback_data=f"reply_to_user:{user_id}:{order_id}",
-        ),
-        InlineKeyboardButton(
-            "📄 Заявка",
-            callback_data=f"operator_open_order:{user_id}:{order_id}",
-        ),
+        )
     )
-    kb.row(
+    kb.add(
         InlineKeyboardButton(
             "🚪 Закрыть чат",
             callback_data=f"close_sms_chat:{user_id}:{order_id}",
@@ -600,10 +604,107 @@ async def user_p2p_agree(callback: types.CallbackQuery) -> None:
 # -----------------------------------------------------------------------------
 # Раздел: SMS-чат (создание, обновление, очистка)
 # -----------------------------------------------------------------------------
+async def _get_sms_chat_worker_ids(order_id: int, fallback_worker_id: Optional[int] = None) -> List[int]:
+    """
+    Возвращает рабочих участников SMS-чата по заявке: все Admin + Mastercard-владелец карты заявки.
+
+    Чат должен быть общим: если его открыл админ или Mastercard, карточка появляется у обоих,
+    и оба могут писать пользователю от лица оператора.
+    """
+    worker_ids: List[int] = []
+    seen: set[int] = set()
+
+    def add(raw_id: Any) -> None:
+        try:
+            uid = int(raw_id or 0)
+        except Exception:
+            uid = 0
+        if uid > 0 and uid not in seen:
+            seen.add(uid)
+            worker_ids.append(uid)
+
+    add(fallback_worker_id)
+
+    # Все админы видят общий SMS-чат по заявке.
+    try:
+        db = await get_db()
+        cur = await db.execute(
+            """
+            SELECT telegram_id
+              FROM users
+             WHERE role = 'Admin'
+               AND telegram_id IS NOT NULL
+            """
+        )
+        rows = await cur.fetchall() or []
+        await cur.close()
+        for row in rows:
+            if row:
+                add(row[0])
+    except Exception:
+        logger.exception("Failed to load Admin ids for SMS chat order_id=%s", order_id)
+
+    # Mastercard получает чат только если его карта использовалась в этой заявке.
+    try:
+        rec = await get_order_by_id(int(order_id))
+    except Exception:
+        rec = None
+
+    card_id = 0
+    try:
+        card_id = int((rec or {}).get("card_id") or 0)
+    except Exception:
+        card_id = 0
+
+    if card_id > 0:
+        try:
+            from db.cards import get_card_by_id
+
+            card = await get_card_by_id(card_id)
+            owner_id = int((card or {}).get("owner_id") or 0)
+            if owner_id > 0:
+                owner = await get_user(owner_id)
+                if str((owner or {}).get("role") or "").strip().lower() == "mastercard":
+                    add(owner_id)
+        except Exception:
+            logger.exception(
+                "Failed to load Mastercard owner for SMS chat order_id=%s card_id=%s",
+                order_id,
+                card_id,
+            )
+
+    return worker_ids
+
+
 async def _ensure_thread(bot: Bot, user_id: int, op_id: int, order_id: int) -> Dict[str, Any]:
-    """Гарантирует наличие карточек SMS-чата у пользователя и оператора."""
+    """Гарантирует наличие карточек SMS-чата у пользователя, всех Admin и Mastercard заявки."""
     data = sms_threads.get(order_id)
+    worker_ids = await _get_sms_chat_worker_ids(order_id, op_id)
+
     if data:
+        data.setdefault("history", [])
+        data.setdefault("op_msg_ids", {})
+        known_workers = set(int(x) for x in data.get("worker_ids", set()) or set())
+        for worker_id in worker_ids:
+            known_workers.add(int(worker_id))
+        data["worker_ids"] = known_workers
+
+        card = _render_sms_card(order_id)
+        # Если чат уже был создан одним участником, досылаем/обновляем карточки тем, у кого их ещё нет.
+        for worker_id in list(known_workers):
+            if int(worker_id) in data.get("op_msg_ids", {}):
+                continue
+            try:
+                sent = await bot_send(
+                    bot,
+                    int(worker_id),
+                    card,
+                    parse_mode="HTML",
+                    reply_markup=_kb_op_chat(user_id, order_id),
+                )
+                data["op_msg_ids"][int(worker_id)] = sent.message_id
+            except Exception:
+                pass
         return data
 
     initial_text = _render_sms_card(order_id)
@@ -612,18 +713,28 @@ async def _ensure_thread(bot: Bot, user_id: int, op_id: int, order_id: int) -> D
         user_id,
         initial_text,
         parse_mode="HTML",
-        reply_markup=_kb_user_chat(op_id, order_id),
+        reply_markup=_kb_user_chat(order_id, user_id),
     )
-    op_msg = await bot_send(
-        bot,
-        op_id,
-        initial_text,
-        parse_mode="HTML",
-        reply_markup=_kb_op_chat(user_id, order_id),
-    )
+
+    op_msg_ids: Dict[int, int] = {}
+    for worker_id in worker_ids:
+        try:
+            op_msg = await bot_send(
+                bot,
+                int(worker_id),
+                initial_text,
+                parse_mode="HTML",
+                reply_markup=_kb_op_chat(user_id, order_id),
+            )
+            op_msg_ids[int(worker_id)] = op_msg.message_id
+        except Exception:
+            pass
+
     sms_threads[order_id] = {
         "user_msg_id": user_msg.message_id,
-        "op_msg_id": op_msg.message_id,
+        "op_msg_ids": op_msg_ids,
+        "worker_ids": set(worker_ids),
+        "op_id": op_id,
         "history": [],
     }
     return sms_threads[order_id]
@@ -638,34 +749,15 @@ async def _append_and_update(
     role: str,
     text: str,
 ) -> None:
-    """Добавляет сообщение в историю SMS-чата и перерисовывает карточки."""
+    """Добавляет сообщение в общий SMS-чат и перерисовывает карточки у пользователя, Admin и Mastercard."""
     data = await _ensure_thread(bot, user_id, op_id, order_id)
 
-    display: Optional[str] = "Оператор" if role == "op" else None
-    if role != "op":
-        try:
-            chat = await bot.get_chat(user_id)
-            full = (getattr(chat, "full_name", None) or "").strip()
-            if full:
-                display = _h(full)
-            elif getattr(chat, "username", None):
-                display = _h(chat.username)
-            else:
-                display = str(user_id)
-        except Exception:
-            display = str(user_id)
-
+    display = "Оператор" if role == "op" else "Пользователь"
     data["history"].append((role, text, _now(), display))
     card = _render_sms_card(order_id)
 
-    try:
+    with suppress(Exception):
         await safe_delete(bot, user_id, data.get("user_msg_id"))
-    except Exception:
-        pass
-    try:
-        await safe_delete(bot, op_id, data.get("op_msg_id"))
-    except Exception:
-        pass
 
     try:
         user_new = await bot_send(
@@ -673,43 +765,94 @@ async def _append_and_update(
             user_id,
             card,
             parse_mode="HTML",
-            reply_markup=_kb_user_chat(op_id, order_id),
+            reply_markup=_kb_user_chat(order_id, user_id),
         )
         data["user_msg_id"] = user_new.message_id
     except Exception:
         pass
 
-    try:
-        op_new = await bot_send(
-            bot,
-            op_id,
-            card,
-            parse_mode="HTML",
-            reply_markup=_kb_op_chat(user_id, order_id),
-        )
-        data["op_msg_id"] = op_new.message_id
-    except Exception:
-        pass
+    worker_ids = await _get_sms_chat_worker_ids(order_id, op_id)
+    known_workers = set(int(x) for x in data.get("worker_ids", set()) or set())
+    for worker_id in worker_ids:
+        known_workers.add(int(worker_id))
+    data["worker_ids"] = known_workers
+
+    old_msg_ids = dict(data.get("op_msg_ids", {}) or {})
+    new_msg_ids: Dict[int, int] = {}
+
+    for worker_id in list(known_workers):
+        old_mid = old_msg_ids.get(int(worker_id))
+        if old_mid:
+            with suppress(Exception):
+                await safe_delete(bot, int(worker_id), old_mid)
+
+        try:
+            op_new = await bot_send(
+                bot,
+                int(worker_id),
+                card,
+                parse_mode="HTML",
+                reply_markup=_kb_op_chat(user_id, order_id),
+            )
+            new_msg_ids[int(worker_id)] = op_new.message_id
+        except Exception:
+            pass
+
+    data["op_msg_ids"] = new_msg_ids
 
 
 async def _cleanup_sms_thread(bot: Bot, user_id: int, op_id: int, order_id: int) -> None:
-    """Удаляет карточки SMS-чата и очищает состояние для заявки."""
+    """
+    Удаляет временные карточки SMS-чата у пользователя, всех Admin/Mastercard и очищает prompts ввода.
+    Основное сообщение подтверждения оплаты не трогаем.
+    """
     data = sms_threads.pop(order_id, None)
-    if not data:
-        return
+
+    worker_ids = set(await _get_sms_chat_worker_ids(order_id, op_id))
+    if data:
+        with suppress(Exception):
+            await safe_delete(bot, user_id, data.get("user_msg_id"))
+
+        for worker_id, message_id in dict(data.get("op_msg_ids", {}) or {}).items():
+            worker_ids.add(int(worker_id))
+            with suppress(Exception):
+                await safe_delete(bot, int(worker_id), int(message_id))
+
+    for worker_id in list(worker_ids):
+        for pending_map in (pending_operator_texts, pending_reply_to_user):
+            try:
+                entry = pending_map.get(int(worker_id))
+                if (
+                    entry
+                    and isinstance(entry, (tuple, list))
+                    and len(entry) >= 3
+                    and entry[1] is not None
+                    and int(entry[1]) == int(order_id)
+                ):
+                    _, _, prompt_message_id = pending_map.pop(int(worker_id))
+                    with suppress(Exception):
+                        await safe_delete(bot, int(worker_id), int(prompt_message_id))
+            except Exception:
+                pass
 
     try:
-        await safe_delete(bot, user_id, data.get("user_msg_id"))
-    except Exception:
-        pass
-    try:
-        await safe_delete(bot, op_id, data.get("op_msg_id"))
+        entry = pending_reply_to_operator.get(user_id)
+        if (
+            entry
+            and isinstance(entry, (tuple, list))
+            and len(entry) >= 3
+            and entry[1] is not None
+            and int(entry[1]) == int(order_id)
+        ):
+            _, _, prompt_message_id = pending_reply_to_operator.pop(user_id)
+            with suppress(Exception):
+                await safe_delete(bot, user_id, int(prompt_message_id))
     except Exception:
         pass
 
 
 async def close_sms_chat(callback: types.CallbackQuery) -> None:
-    """Закрывает SMS-чат без уведомлений обеим сторонам."""
+    """Закрывает общий SMS-чат по заявке у пользователя, Admin и Mastercard."""
     await callback.answer()
     parts = (callback.data or "").split(":")
     try:
@@ -722,13 +865,11 @@ async def close_sms_chat(callback: types.CallbackQuery) -> None:
             pass
         return
 
-    op_id = callback.from_user.id
-    await _cleanup_sms_thread(callback.bot, user_id, op_id, order_id)
+    closer_id = int(callback.from_user.id)
+    await _cleanup_sms_thread(callback.bot, user_id, closer_id, order_id)
 
-    try:
-        await safe_delete(callback.bot, op_id, callback.message.message_id)
-    except Exception:
-        pass
+    with suppress(Exception):
+        await safe_delete(callback.bot, closer_id, callback.message.message_id)
 
 
 # -----------------------------------------------------------------------------
@@ -1982,13 +2123,31 @@ async def relay(message: types.Message) -> None:
 
 
 async def operator_message(callback: types.CallbackQuery) -> None:
-    """Запрос текста/файла от оператора для пользователя внутри SMS-чата."""
+    """
+    Запускает SMS-чат по конкретной заявке.
+
+    Важно:
+    - при нажатии на «SMS-чат» пустая карточка чата НЕ создаётся;
+    - сначала сотрудник вводит первое сообщение;
+    - после ввода создаётся общий SMS-чат по заявке уже с этим сообщением;
+    - чат видят все Admin и Mastercard-владелец карты заявки.
+    """
     await callback.answer()
-    operator_id = callback.from_user.id
+    operator_id = int(callback.from_user.id)
+
     parts = (callback.data or "").split(":")
     try:
         user_id = int(parts[1])
     except Exception:
+        await bot_send(callback.bot, operator_id, "⚠️ Не удалось открыть SMS-чат: неверные данные кнопки.")
+        return
+
+    if user_id <= 0:
+        await bot_send(
+            callback.bot,
+            operator_id,
+            "⚠️ SMS-чат недоступен: у этой WEB-заявки нет Telegram-пользователя.",
+        )
         return
 
     order_id: Optional[int] = None
@@ -2002,27 +2161,40 @@ async def operator_message(callback: types.CallbackQuery) -> None:
         rec = await get_pending_order(user_id)
         order_id = int(rec["order_id"]) if rec and rec.get("order_id") else None
 
+    if order_id is None:
+        await bot_send(callback.bot, operator_id, "⚠️ Не удалось открыть SMS-чат: заявка не найдена.")
+        return
+
+    # Не удаляем и не меняем основное сообщение подтверждения оплаты.
+    # Оно должно остаться в рабочем чате.
     prompt = await bot_send(
-        callback.bot, operator_id, "✏️ Введите текст или прикрепите файл для пользователя:"
+        callback.bot,
+        operator_id,
+        "✏️ Введите первое сообщение для пользователя по этой заявке:",
     )
-    pending_operator_texts[operator_id] = (user_id, order_id, prompt.message_id)
+    pending_operator_texts[operator_id] = (user_id, int(order_id), prompt.message_id)
 
 
 async def operator_message_input(message: types.Message) -> None:
-    """Обработка ввода оператора для пользователя в SMS-чате."""
-    operator_id = message.from_user.id
+    """
+    Обрабатывает первое сообщение сотрудника после кнопки «SMS-чат».
+
+    После ввода создаётся/обновляется общий SMS-чат:
+    пользователь + все Admin + Mastercard-владелец карты заявки.
+    """
+    operator_id = int(message.from_user.id)
     entry = pending_operator_texts.pop(operator_id, None)
     if not entry or not isinstance(entry, (tuple, list)) or len(entry) < 3:
         return
 
     user_id, order_id, prompt_message_id = entry
-    await safe_delete(message.bot, operator_id, prompt_message_id)
+
+    with suppress(Exception):
+        await safe_delete(message.bot, operator_id, prompt_message_id)
 
     if order_id is None:
-        try:
+        with suppress(Exception):
             await safe_delete(message.bot, operator_id, message.message_id)
-        except Exception:
-            pass
         return
 
     if message.content_type == ContentType.TEXT:
@@ -2031,12 +2203,29 @@ async def operator_message_input(message: types.Message) -> None:
         cap = getattr(message, "caption", None)
         text = _h((cap or "(см. вложение)").strip())
 
-    await _append_and_update(message.bot, user_id, operator_id, order_id, role="op", text=text)
+    if not text:
+        text = "(пустое сообщение)"
 
     try:
-        await safe_delete(message.bot, operator_id, message.message_id)
+        await _append_and_update(
+            message.bot,
+            int(user_id),
+            operator_id,
+            int(order_id),
+            role="op",
+            text=text,
+        )
     except Exception:
-        pass
+        logger.exception(
+            "Failed to append first SMS message order_id=%s user_id=%s operator_id=%s",
+            order_id,
+            user_id,
+            operator_id,
+        )
+        await bot_send(message.bot, operator_id, "⚠️ Не удалось отправить сообщение в SMS-чат.")
+
+    with suppress(Exception):
+        await safe_delete(message.bot, operator_id, message.message_id)
 
 
 async def reply_to_user(callback: types.CallbackQuery) -> None:
@@ -2211,6 +2400,7 @@ def register_operator_handlers(dp: Dispatcher) -> None:
         operator_message_input,
         lambda m: m.from_user.id in pending_operator_texts,
         content_types=ContentType.ANY,
+        state="*",
     )
     dp.register_callback_query_handler(
         reply_to_user,
@@ -2221,6 +2411,7 @@ def register_operator_handlers(dp: Dispatcher) -> None:
         handle_reply_from_operator,
         lambda m: m.from_user.id in pending_reply_to_user,
         content_types=ContentType.ANY,
+        state="*",
     )
     dp.register_callback_query_handler(
         reply_to_operator,
@@ -2236,6 +2427,7 @@ def register_operator_handlers(dp: Dispatcher) -> None:
         handle_reply_from_user,
         lambda m: m.from_user.id in pending_reply_to_operator,
         content_types=ContentType.ANY,
+        state="*",
     )
     dp.register_message_handler(close_chat, commands=["close_chat"])
     dp.register_message_handler(close_chat, lambda m: m.text == "Закрыть чат", state=None)
