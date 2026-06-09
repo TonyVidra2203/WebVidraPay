@@ -1079,7 +1079,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
             f"Монета: {asset}\n"
             f"Сумма: {amount_str} {asset}\n"
             f"Адрес: {short_wallet}\n\n"
-            f"1️⃣ Оплата получена — ✅\n"
+            f"1️⃣ Оплата получена — ⏳\n"
             f"2️⃣ Средства на обменнике — ⏳\n"
             f"3️⃣ Перевод на ваш кошелёк — ⏳\n\n"
             "❗️ Если обмен не начнется в течение 10 минут — напишите в поддержку."
@@ -1245,7 +1245,6 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         with suppress(Exception):
             from db.p2p import mark_p2p_action_sent
             await mark_p2p_action_sent(order_id_int, action_name)
-
 
 async def handle_cancel(callback: types.CallbackQuery) -> None:
     await callback.answer()
