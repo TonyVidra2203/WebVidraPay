@@ -1122,28 +1122,10 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         except Exception:
             mention = f"user_id {order_user_id}"
 
-    title = "‼️<b>Подтверждение оплаты из WEB!</b>‼️" if is_web_order else "‼️<b>Подтверждение оплаты!</b>‼️"
-
-    admin_text = (
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"{title}\n\n"
-        f"👤 {mention}\n"
-        f"🆔 <b>Заявка №{db_order_id}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"💳 <b>Карта:</b> <code>{html_escape(card)}</code>\n"
-        f"🏦 <b>Банк:</b> {html_escape(bank)}\n"
-        f"💸 <b>Сумма:</b> <b>{html_escape(amount_rub)} ₽</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 <b>Монета:</b> <b>{html_escape(asset)}</b>\n"
-        f"📦 <b>К выдаче:</b> <b>{html_escape(amount_str)} {html_escape(asset)}</b>\n"
-        f"🏷 <b>Кошелёк:</b> <code>{html_escape(wallet or '—')}</code>\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-
     ikb_mastercard = InlineKeyboardMarkup()
     ikb_mastercard.row(
         InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
-        InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{db_order_id}"),
+        InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{order_user_id}:{db_order_id}"),
     )
     ikb_mastercard.add(
         InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
@@ -1152,7 +1134,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
     ikb_admin = InlineKeyboardMarkup()
     ikb_admin.row(
         InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
-        InlineKeyboardButton("📥 Заявка", callback_data=f"operator_open_order:{order_user_id}:{db_order_id}"),
+        InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{order_user_id}:{db_order_id}"),
     )
     ikb_admin.add(
         InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
@@ -1178,6 +1160,59 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
     mastercard_owner_id: Optional[int] = None
     with suppress(Exception):
         mastercard_owner_id = await _get_mastercard_owner_id_for_order(p2p)
+
+    mastercard_mention = "—"
+    if mastercard_owner_id:
+        with suppress(Exception):
+            mc_chat = await callback.bot.get_chat(int(mastercard_owner_id))
+            if getattr(mc_chat, "username", None):
+                mastercard_mention = f"@{mc_chat.username}"
+            else:
+                mastercard_mention = html_escape(getattr(mc_chat, "full_name", str(mastercard_owner_id)))
+
+        if mastercard_mention == "—":
+            with suppress(Exception):
+                mc_user = await get_user(int(mastercard_owner_id))
+                raw_mc_username = str((mc_user or {}).get("username") or "").strip()
+                if raw_mc_username:
+                    mastercard_mention = raw_mc_username if raw_mc_username.startswith("@") else f"@{raw_mc_username}"
+                else:
+                    mastercard_mention = f"user_id {int(mastercard_owner_id)}"
+
+    wallet_full = str(wallet or "").strip() or "—"
+    if wallet_full != "—" and len(wallet_full) > 12:
+        wallet_for_mastercard = f"{wallet_full[:4]}…{wallet_full[-5:]}"
+    else:
+        wallet_for_mastercard = wallet_full
+
+    mastercard_text = (
+        "‼️Подтверждение оплаты‼️\n\n"
+        f"🆔 Заявка №{html_escape(db_order_id)}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 Монета: {html_escape(asset)}\n"
+        f"📦 К выдаче: {html_escape(amount_str)} {html_escape(asset)}\n"
+        f"🏷 Кошелёк: {html_escape(wallet_for_mastercard)}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💳 Карта/СБП: {html_escape(card)}\n"
+        f"🏦 Банк: {html_escape(bank)}\n"
+        f"💸 Сумма: {html_escape(amount_rub)} ₽"
+    )
+
+    admin_text = (
+        "‼️Подтверждение оплаты‼️\n\n"
+        f"👤 {mention}\n"
+        f"👤 ID: {html_escape(order_user_id)}\n"
+        f"🧑‍💼 Mastercard: {mastercard_mention}\n\n"
+        f"🆔 Заявка №{html_escape(db_order_id)}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 Монета: {html_escape(asset)}\n"
+        f"📦 К выдаче: {html_escape(amount_str)} {html_escape(asset)}\n"
+        f"🏷 Кошелёк: {html_escape(wallet_full)}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💳 Карта: {html_escape(card)}\n"
+        f"🏦 Банк: {html_escape(bank)}\n"
+        f"💸 Сумма: {html_escape(amount_rub)} ₽"
+    )
 
     if mastercard_owner_id:
         recipients.append((int(mastercard_owner_id), ikb_mastercard, "mastercard"))
@@ -1226,10 +1261,12 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
         return
 
     for recipient_id, recipient_kb, _kind in unique_recipients:
+        notification_text = mastercard_text if _kind == "mastercard" else admin_text
+
         with suppress(Exception):
             sent = await callback.bot.send_message(
                 int(recipient_id),
-                admin_text,
+                notification_text,
                 parse_mode="HTML",
                 reply_markup=recipient_kb,
                 disable_web_page_preview=True,
