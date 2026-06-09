@@ -2122,6 +2122,58 @@ async def relay(message: types.Message) -> None:
         logger.exception("relay error")
 
 
+
+async def user_support_sms_start(callback: types.CallbackQuery) -> None:
+    """
+    Пользователь нажал «Связаться с поддержкой» под карточкой статуса.
+
+    Логика такая же, как при запуске SMS-чата сотрудником:
+    сначала просим пользователя написать первое сообщение, затем создаём общий
+    SMS-чат по заявке для пользователя, всех Admin и Mastercard-владельца карты.
+    """
+    await callback.answer()
+    user_id = int(callback.from_user.id)
+
+    parts = (callback.data or "").split(":")
+    try:
+        order_id = int(parts[1])
+    except Exception:
+        await bot_send(callback.bot, user_id, "⚠️ Не удалось открыть SMS-чат: заявка не найдена.")
+        return
+
+    rec: Optional[Dict[str, Any]] = None
+    with suppress(Exception):
+        rec = await get_order_by_id(order_id)
+
+    if not rec:
+        await bot_send(callback.bot, user_id, "⚠️ Заявка не найдена или уже закрыта.")
+        return
+
+    try:
+        order_user_id = int((rec or {}).get("user_id") or 0)
+    except Exception:
+        order_user_id = 0
+
+    if order_user_id != user_id:
+        await bot_send(callback.bot, user_id, "⚠️ Этот SMS-чат доступен только владельцу заявки.")
+        return
+
+    status = str((rec or {}).get("status") or "").strip().lower()
+    if status and status != "pending":
+        await bot_send(callback.bot, user_id, "⚠️ Заявка уже закрыта.")
+        return
+
+    with suppress(Exception):
+        await safe_edit(callback.message, reply_markup=None)
+
+    prompt = await bot_send(
+        callback.bot,
+        user_id,
+        "✏️ Напишите первое сообщение в поддержку по этой заявке:",
+    )
+    pending_reply_to_operator[user_id] = (0, int(order_id), prompt.message_id)
+
+
 async def operator_message(callback: types.CallbackQuery) -> None:
     """
     Запускает SMS-чат по конкретной заявке.
@@ -2385,6 +2437,11 @@ def register_operator_handlers(dp: Dispatcher) -> None:
     )
     dp.register_callback_query_handler(
         user_cancel_order, lambda c: (c.data or "") == "cancel_pay", state="*"
+    )
+    dp.register_callback_query_handler(
+        user_support_sms_start,
+        lambda c: (c.data or "").startswith("user_support_sms:"),
+        state="*",
     )
     dp.register_callback_query_handler(
         operator_message,

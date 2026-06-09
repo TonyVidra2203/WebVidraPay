@@ -64,6 +64,7 @@ INSTRUCTION_TEXT_TEMPLATE = (
 
 BTC_LIKE = {"BTC", "LTC"}
 ASSET_MARKERS = ("BTC", "LTC", "USDT", "XMR")
+SUPPORT_BUTTON_DELAY_SEC = 10 * 60
 
 
 def html_escape(value: Any) -> str:
@@ -409,6 +410,107 @@ async def _update_user_status_card(
             message_id=message_id,
             parse_mode="HTML",
         )
+
+
+def _kb_user_support_after_wait(order_id: int) -> InlineKeyboardMarkup:
+    """Кнопка связи с поддержкой, которая появляется под карточкой статуса через 10 минут."""
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            "Связаться с поддержкой",
+            callback_data=f"user_support_sms:{int(order_id)}",
+        )
+    )
+    return kb
+
+
+async def _order_exchange_already_started_or_closed(order_id: int) -> bool:
+    """
+    Проверяет, нужно ли НЕ показывать кнопку поддержки:
+    - заявка уже не pending;
+    - обмен уже был запущен/захвачен через action exchange_start.
+    """
+    try:
+        oid = int(order_id)
+    except Exception:
+        return True
+
+    if oid <= 0:
+        return True
+
+    with suppress(Exception):
+        from db.p2p import get_order_by_id
+
+        order = await get_order_by_id(oid)
+        if not order:
+            return True
+
+        status = str((order or {}).get("status") or "").strip().lower()
+        if status and status != "pending":
+            return True
+
+    with suppress(Exception):
+        db = await get_db()
+        cur = await db.execute(
+            """
+            SELECT status
+              FROM p2p_order_actions
+             WHERE order_id = ?
+               AND action = 'exchange_start'
+             LIMIT 1
+            """,
+            (oid,),
+        )
+        row = await cur.fetchone()
+        with suppress(Exception):
+            await cur.close()
+
+        if row:
+            action_status = str(row[0] or "").strip().lower()
+            if action_status in {"claimed", "sent"}:
+                return True
+
+    return False
+
+
+async def _show_support_button_after_wait(
+    bot: Bot,
+    *,
+    order_id: int,
+    user_id: int,
+    message_id: int,
+) -> None:
+    """
+    Через 10 минут после появления карточки статуса добавляет кнопку поддержки,
+    если обмен к этому моменту ещё не начался.
+    """
+    try:
+        oid = int(order_id)
+        uid = int(user_id)
+        mid = int(message_id)
+    except Exception:
+        return
+
+    if oid <= 0 or uid <= 0 or mid <= 0:
+        return
+
+    await asyncio.sleep(SUPPORT_BUTTON_DELAY_SEC)
+
+    try:
+        current_ref = STATE.status_cards.get(oid)
+        if current_ref and (int(current_ref[0]) != uid or int(current_ref[1]) != mid):
+            return
+
+        if await _order_exchange_already_started_or_closed(oid):
+            return
+
+        await bot.edit_message_reply_markup(
+            chat_id=uid,
+            message_id=mid,
+            reply_markup=_kb_user_support_after_wait(oid),
+        )
+    except Exception:
+        logger.exception("Failed to show support button for order_id=%s user_id=%s", oid, uid)
 
 
 async def _finalize_exchange_ui(bot: Bot, order_id: int, operator_id: Optional[int]) -> None:
@@ -1082,12 +1184,20 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
             f"1️⃣ Оплата получена — ⏳\n"
             f"2️⃣ Средства на обменнике — ⏳\n"
             f"3️⃣ Перевод на ваш кошелёк — ⏳\n\n"
-            "❗️ Если обмен не начнется в течение 10 минут — напишите в поддержку."
+            "❗️ Если обмен не начнется в течение 10 минут — напишите в поддержку. Кнопка появится автоматически под этим сообщением!"
         )
 
         sent_card = await callback.bot.send_message(order_user_id, card_text, parse_mode="HTML")
         if order_id_int is not None:
             STATE.status_cards[order_id_int] = (sent_card.chat.id, sent_card.message_id)
+            asyncio.create_task(
+                _show_support_button_after_wait(
+                    callback.bot,
+                    order_id=int(order_id_int),
+                    user_id=int(order_user_id),
+                    message_id=int(sent_card.message_id),
+                )
+            )
             with suppress(Exception):
                 from db.p2p import mark_p2p_action_sent
                 await mark_p2p_action_sent(order_id_int, "user_paid_status_card", message_id=sent_card.message_id)
