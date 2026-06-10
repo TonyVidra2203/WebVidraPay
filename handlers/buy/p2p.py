@@ -509,7 +509,6 @@ async def _finalize_order(
 
     if notify_ops:
         user_mention = await _user_mention(bot, user_id)
-        from handlers.common import active_mc_sessions
 
         ops: List[int] = []
         all_users = await get_all_users()
@@ -526,15 +525,7 @@ async def _finalize_order(
             if tid <= 0:
                 continue
 
-            if role == "mastercard":
-                try:
-                    if await is_mastercard_balance_correction_active(tid):
-                        continue
-                except Exception:
-                    logger.exception("Не удалось проверить коррекцию баланса Mastercard для %s", tid)
-                    continue
-                ops.append(tid)
-            elif role == "admin":
+            if role == "admin":
                 ops.append(tid)
 
         pending_operator_messages[user_id] = []
@@ -566,11 +557,11 @@ async def _finalize_order(
                         message_id=int(sent.message_id),
                     )
                 except Exception:
-                    logger.exception("Не удалось сохранить уведомление Mastercard по заявке #%s", order_id)
+                    logger.exception("Не удалось сохранить уведомление админа по заявке #%s", order_id)
             except (ChatNotFound, BotBlocked, CantInitiateConversation, Unauthorized) as e:
-                logger.warning("Пропущен оператор %s: %s", op, e)
+                logger.warning("Пропущен админ %s: %s", op, e)
             except Exception:
-                logger.exception("Не удалось отправить нотификацию оператору %s", op)
+                logger.exception("Не удалось отправить нотификацию админу %s", op)
     else:
         pending_operator_messages[user_id] = []
 
@@ -581,8 +572,7 @@ async def _finalize_order(
 
             sent_user = await bot.send_message(
                 user_id,
-                "⚠️ Заявка создана! Ожидайте свободного оператора...\n\n"
-                ,
+                "⚠️ Заявка создана! Ожидайте свободного оператора...\n\n",
                 reply_markup=kb,
             )
             pending_buy_messages[user_id] = (sent_user.chat.id, sent_user.message_id)
@@ -590,6 +580,7 @@ async def _finalize_order(
             logger.exception("Не удалось отправить пользователю подтверждение заявки")
 
     return int(order_id)
+
 
 async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data: Dict[str, Any]) -> None:
     user_id = int(order["user_id"])
@@ -626,16 +617,7 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
         if tid <= 0 or tid in seen:
             continue
 
-        if role == "mastercard":
-            try:
-                if await is_mastercard_balance_correction_active(tid):
-                    continue
-            except Exception:
-                logger.exception("Не удалось проверить коррекцию баланса Mastercard для %s", tid)
-                continue
-            seen.add(tid)
-            ops.append(tid)
-        elif role == "admin":
+        if role == "admin":
             seen.add(tid)
             ops.append(tid)
 
@@ -658,6 +640,7 @@ async def _notify_ops_paycore_paid(bot: Bot, order: Dict[str, Any], status_data:
                     chat_id=int(sent.chat.id),
                     message_id=int(sent.message_id),
                 )
+
 
 
 async def _edit_operator_cards_to_canceled(bot: Bot, user_id: int, order: Dict[str, Any]) -> None:
