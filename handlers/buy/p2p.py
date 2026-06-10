@@ -954,8 +954,15 @@ async def _paycore_watch_and_autostart(
     """
     Старое имя функции оставлено специально, чтобы минимально трогать старую архитектуру.
 
-    Теперь внутри это не Paycore, а Nirvana ТрансМежбанк:
+    Теперь внутри это не Paycore, а WebVidra/Nirvana ТрансМежбанк:
     transaction_id = client_id Nirvana.
+
+    После SUCCESS эта ветка ведёт себя ближе к эталонной VidraPay-логике:
+    - фиксирует подтверждение оплаты;
+    - отправляет админам рабочее уведомление о подтверждённой оплате;
+    - запускает автообмен;
+    - если автообмен не стартовал, отправляет админам карточку ошибки с кнопкой ручного завершения;
+    - финальное успешное уведомление пользователю/админам остаётся в handlers.chat.instruction.track_ff_order_status.
     """
     started = asyncio.get_running_loop().time()
     client_id = str(transaction_id or "").strip()
@@ -967,27 +974,90 @@ async def _paycore_watch_and_autostart(
             return []
 
         ids: List[int] = []
+        seen: set[int] = set()
         for u in all_users or []:
             try:
-                if u.get("role") == "Admin" and isinstance(u.get("telegram_id"), int):
-                    ids.append(int(u["telegram_id"]))
+                role = str(u.get("role") or "").strip().lower()
+                tid = int(u.get("telegram_id") or 0)
             except Exception:
                 continue
+
+            if role == "admin" and tid > 0 and tid not in seen:
+                seen.add(tid)
+                ids.append(tid)
+
         return ids
 
-    async def _notify_admin(text: str) -> None:
+    async def _notify_admin(text: str, *, reply_markup: Optional[InlineKeyboardMarkup] = None) -> List[types.Message]:
         admin_ids = await _admin_ids()
         if not admin_ids:
-            return
+            return []
 
+        sent_messages: List[types.Message] = []
         for aid in admin_ids:
             with suppress(Exception):
-                await bot.send_message(
+                sent = await bot.send_message(
                     aid,
                     text,
                     parse_mode="HTML",
                     disable_web_page_preview=True,
+                    reply_markup=reply_markup,
                 )
+                sent_messages.append(sent)
+
+        return sent_messages
+
+    async def _remember_order_ui_message(
+        oid: int,
+        chat_id: Optional[int],
+        message_id: Optional[int],
+        *,
+        kind: str = "ff_ui",
+    ) -> None:
+        """
+        Сохраняет рабочие уведомления WebVidra в ту же таблицу, которую потом чистит
+        handlers.chat.instruction._finalize_exchange_ui().
+        """
+        try:
+            oid_int = int(oid)
+            chat_id_int = int(chat_id)
+            message_id_int = int(message_id)
+        except Exception:
+            return
+
+        if oid_int <= 0 or chat_id_int == 0 or message_id_int <= 0:
+            return
+
+        try:
+            db = await get_db()
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS p2p_order_ui_messages (
+                    order_id   INTEGER NOT NULL,
+                    chat_id    INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    kind       TEXT NOT NULL DEFAULT 'ff_ui',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (order_id, chat_id, message_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO p2p_order_ui_messages
+                    (order_id, chat_id, message_id, kind)
+                VALUES (?, ?, ?, ?)
+                """,
+                (oid_int, chat_id_int, message_id_int, str(kind or "ff_ui")),
+            )
+            await db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to remember WebVidra UI message order_id=%s chat_id=%s message_id=%s",
+                oid_int,
+                chat_id_int,
+                message_id_int,
+            )
 
     async def _cleanup_user_ui_for_success(*, oid: int, uid: int) -> None:
         meta = PAYCORE_WATCH_META.pop(int(oid), None) or {}
@@ -1001,13 +1071,6 @@ async def _paycore_watch_and_autostart(
             chat_id, msg_id = pending_buy_messages.pop(uid)
             with suppress(Exception):
                 await bot.delete_message(int(chat_id), int(msg_id))
-
-    client = NirvanaClient(
-        api_public=getattr(settings, "nirvana_api_public", ""),
-        api_private=getattr(settings, "nirvana_api_private", ""),
-        base_url=getattr(settings, "nirvana_base_url", "https://api.nirvanapay.pro"),
-        timeout_sec=int(getattr(settings, "nirvana_timeout_sec", 20)),
-    )
 
     def _status_from_payload(payload: Dict[str, Any]) -> str:
         status = payload.get("status")
@@ -1028,6 +1091,239 @@ async def _paycore_watch_and_autostart(
         except Exception:
             return None
 
+    def _format_amount_for_notice(asset_name: str, amount: float) -> str:
+        asset_u = str(asset_name or "BTC").upper()
+        if asset_u == "USDT":
+            return str(int(round(float(amount))))
+
+        precision_map = {
+            "BTC": 8,
+            "LTC": 8,
+            "XMR": 8,
+        }
+        precision = precision_map.get(asset_u, 8)
+
+        try:
+            formatted = f"{float(amount):.{precision}f}".rstrip("0").rstrip(".")
+        except Exception:
+            formatted = str(amount)
+
+        return formatted or "0"
+
+    def _short_wallet_for_notice(wallet_value: str) -> str:
+        value = str(wallet_value or "").strip()
+        if not value:
+            return "—"
+        if len(value) <= 12:
+            return value
+        return f"{value[:6]}…{value[-4:]}"
+
+    def _humanize_autostart_error(raw_error: Any) -> str:
+        text = str(raw_error or "").strip()
+        if not text:
+            return "Не удалось запустить обмен. Точная причина не была сохранена."
+
+        low = text.lower()
+
+        if "wallet not found" in low:
+            return "Не найден кошелёк получателя для отправки."
+
+        if "ff wallets maintenance" in low:
+            return "Обменник временно недоступен: кошельки FixedFloat находятся на техническом обслуживании."
+
+        if "create_order вернул неполные данные" in low:
+            return "Обменник вернул неполные данные для старта обмена."
+
+        if "ff create_order error:" in low:
+            details = text.split(":", 1)[1].strip() if ":" in text else text
+            details_low = details.lower()
+
+            if "out of limits" in details_low or "limit" in details_low:
+                return "Сумма заявки не проходит по лимитам обменника."
+            if "minimum" in details_low and "amount" in details_low:
+                return "Сумма заявки меньше минимально допустимой для обменника."
+            if "maximum" in details_low and "amount" in details_low:
+                return "Сумма заявки превышает максимально допустимую для обменника."
+            if "address" in details_low and ("invalid" in details_low or "not valid" in details_low):
+                return "Указан некорректный адрес кошелька получателя."
+            if "pair" in details_low and ("not found" in details_low or "unsupported" in details_low):
+                return "Обменник не поддерживает выбранное направление обмена."
+            if "insufficient liquidity" in details_low or "not enough liquidity" in details_low:
+                return "В обменнике сейчас недостаточно ликвидности для выполнения этой заявки."
+            if "maintenance" in details_low:
+                return "Обменник временно недоступен из-за технических работ."
+            if "timeout" in details_low:
+                return "Обменник не ответил вовремя. Попробуйте запустить обмен ещё раз."
+            if "too many requests" in details_low:
+                return "Обменник временно отклонил запрос из-за слишком большого количества обращений."
+
+            return f"Ошибка при создании заявки в обменнике: {details}"
+
+        if "ton withdraw error:" in low:
+            details = text.split(":", 1)[1].strip() if ":" in text else text
+            details_low = details.lower()
+
+            if "insufficient balance" in details_low:
+                return "Недостаточно средств на Binance для отправки TON в обменник."
+            if "minimum notional" in details_low or "notional" in details_low:
+                return "Сумма покупки TON слишком маленькая для Binance."
+            if "tonusdt" in details_low and "price" in details_low:
+                return "Не удалось получить актуальную цену TON/USDT на Binance."
+            if "withdraw" in details_low and "disabled" in details_low:
+                return "Вывод TON на Binance временно недоступен."
+            if "timeout" in details_low:
+                return "Binance не ответил вовремя при выводе TON. Попробуйте повторить запуск."
+
+            return f"Ошибка при отправке TON в обменник: {details}"
+
+        if "not enough" in low and "liquidity" in low:
+            return "В обменнике сейчас недостаточно ликвидности для выполнения заявки."
+        if "out of limits" in low or ("limit" in low and "error" in low):
+            return "Сумма заявки не проходит по лимитам обменника."
+        if "timeout" in low:
+            return "Внешний сервис не ответил вовремя. Попробуйте повторить запуск обмена."
+        if "insufficient balance" in low:
+            return "Недостаточно средств для запуска обмена."
+        if "invalid address" in low or ("address" in low and "invalid" in low):
+            return "Указан некорректный адрес кошелька."
+        if "too many requests" in low:
+            return "Слишком много запросов к внешнему сервису. Попробуйте повторить чуть позже."
+
+        return text
+
+    async def _get_exchange_start_error(oid: int) -> str:
+        try:
+            db = await get_db()
+            cur = await db.execute(
+                """
+                SELECT error
+                  FROM p2p_order_actions
+                 WHERE order_id = ?
+                   AND action = 'exchange_start'
+                 ORDER BY updated_at DESC
+                 LIMIT 1
+                """,
+                (int(oid),),
+            )
+            row = await cur.fetchone()
+            with suppress(Exception):
+                await cur.close()
+
+            if row and row[0]:
+                return str(row[0] or "").strip()
+        except Exception:
+            logger.exception("Failed to load exchange_start error for order_id=%s", oid)
+
+        return ""
+
+    async def _send_payment_confirmed_notice(order: Dict[str, Any], status_data: Dict[str, Any]) -> None:
+        asset = _resolve_order_asset(order_id, order)
+        user_mention = await _user_mention(bot, user_id)
+
+        try:
+            crypto_amount = float(order.get("btc_amount") or 0)
+        except Exception:
+            crypto_amount = 0.0
+
+        try:
+            rub_sum = int(float(order.get("total_rub") or 0))
+        except Exception:
+            rub_sum = 0
+
+        amount_received = _amount_fiat_received(status_data)
+        amount_received_line = ""
+        if amount_received is not None:
+            try:
+                amount_received_line = f"\n💰 Получено: <b>{int(round(float(amount_received)))} ₽</b>"
+            except Exception:
+                amount_received_line = f"\n💰 Получено: <b>{html.escape(str(amount_received))} ₽</b>"
+
+        wallet = str(order.get("wallet") or "").strip()
+        amount_text = _format_amount_for_notice(asset, crypto_amount)
+
+        text = (
+            "‼️Подтверждение оплаты‼️\n\n"
+            f"👤 {user_mention}\n"
+            f"👤 ID: <b>{int(user_id)}</b>\n\n"
+            f"🆔 Заявка №{html.escape(str(order_id))}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 Монета: {html.escape(asset)}\n"
+            f"📦 К выдаче: {html.escape(amount_text)} {html.escape(asset)}\n"
+            f"🏷 Кошелёк: <code>{html.escape(wallet or '—')}</code>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💳 Метод: <b>WebVidra</b>\n"
+            f"💸 Сумма: <b>{html.escape(str(rub_sum))} ₽</b>"
+            f"{amount_received_line}\n\n"
+            "✅ Оплата подтверждена автоматически.\n"
+            "🔄 Обмен запускается автоматически."
+        )
+
+        sent_messages = await _notify_admin(text)
+        for sent in sent_messages:
+            with suppress(Exception):
+                await _remember_order_ui_message(
+                    int(order_id),
+                    sent.chat.id,
+                    sent.message_id,
+                    kind="webvidra_paid_confirmed",
+                )
+
+    async def _send_exchange_error_notice(order: Dict[str, Any], raw_error: Any) -> None:
+        asset = _resolve_order_asset(order_id, order)
+        user_mention = await _user_mention(bot, user_id)
+
+        try:
+            crypto_amount = float(order.get("btc_amount") or 0)
+        except Exception:
+            crypto_amount = 0.0
+
+        try:
+            rub_sum = int(float(order.get("total_rub") or 0))
+        except Exception:
+            rub_sum = 0
+
+        wallet = str(order.get("wallet") or "").strip()
+        amount_text = _format_amount_for_notice(asset, crypto_amount)
+        human_error = _humanize_autostart_error(raw_error)
+
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.row(
+            InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{int(user_id)}:{int(order_id)}"),
+        )
+        kb.add(
+            InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{int(order_id)}:{int(user_id)}")
+        )
+
+        text = (
+            "🚨 <b>ОШИБКА ОБМЕНА — НУЖНО РУЧНОЕ ЗАВЕРШЕНИЕ</b>\n\n"
+            f"🆔 Заявка: <b>#{int(order_id)}</b>\n"
+            f"👤 Пользователь: {user_mention}\n"
+            f"👤 ID: <b>{int(user_id)}</b>\n"
+            "💳 Метод: <b>WebVidra</b>\n\n"
+            f"🪙 Монета: <b>{html.escape(asset)}</b>\n"
+            f"📦 К выдаче: <b>{html.escape(amount_text)} {html.escape(asset)}</b>\n"
+            f"🏷 Адрес: <code>{html.escape(wallet or '—')}</code>\n"
+            f"💸 Сумма: <b>{html.escape(str(rub_sum))} ₽</b>\n\n"
+            f"Причина: <b>{html.escape(human_error)}</b>"
+        )
+
+        sent_messages = await _notify_admin(text, reply_markup=kb)
+        for sent in sent_messages:
+            with suppress(Exception):
+                await _remember_order_ui_message(
+                    int(order_id),
+                    sent.chat.id,
+                    sent.message_id,
+                    kind="webvidra_exchange_error",
+                )
+
+    client = NirvanaClient(
+        api_public=getattr(settings, "nirvana_api_public", ""),
+        api_private=getattr(settings, "nirvana_api_private", ""),
+        base_url=getattr(settings, "nirvana_base_url", "https://api.nirvanapay.pro"),
+        timeout_sec=int(getattr(settings, "nirvana_timeout_sec", 20)),
+    )
+
     try:
         while True:
             if asyncio.get_running_loop().time() - started > timeout_sec:
@@ -1043,10 +1339,10 @@ async def _paycore_watch_and_autostart(
 
                 user_mention = await _user_mention(bot, user_id)
                 await _notify_admin(
-                    "⚠️ <b>P2P: истекло время ожидания Nirvana ТрансМежбанк</b>\n\n"
+                    "⚠️ <b>WebVidra: истекло время ожидания оплаты</b>\n\n"
                     f"Заявка: <b>#{order_id}</b>\n"
                     f"Пользователь: {user_mention}\n"
-                    f"Asset: <b>{html.escape(str(asset))}</b>\n"
+                    f"Монета: <b>{html.escape(str(asset))}</b>\n"
                     f"Client ID: <code>{html.escape(client_id)}</code>\n"
                     f"Статус заявки: <b>{html.escape(str((order or {}).get('status') or ''))}</b>"
                 )
@@ -1088,7 +1384,7 @@ async def _paycore_watch_and_autostart(
                 logger.exception("Unexpected Nirvana status polling error order_id=%s", order_id)
                 user_mention = await _user_mention(bot, user_id)
                 await _notify_admin(
-                    "❌ <b>P2P: ошибка проверки Nirvana ТрансМежбанк</b>\n\n"
+                    "❌ <b>WebVidra: ошибка проверки оплаты</b>\n\n"
                     f"Заявка: <b>#{order_id}</b>\n"
                     f"Пользователь: {user_mention}\n"
                     f"Client ID: <code>{html.escape(client_id)}</code>\n"
@@ -1111,6 +1407,8 @@ async def _paycore_watch_and_autostart(
                 with suppress(Exception):
                     await _cleanup_user_ui_for_success(oid=int(order_id), uid=int(user_id))
 
+                await _send_payment_confirmed_notice(order, status_data)
+
                 try:
                     from handlers.chat.instruction import start_exchange_from_p2p  # type: ignore
 
@@ -1119,33 +1417,31 @@ async def _paycore_watch_and_autostart(
                     except Exception:
                         op_id = None
 
-                    await start_exchange_from_p2p(
+                    started_ok = await start_exchange_from_p2p(
                         bot=bot,
                         p2p=order,
                         operator_id=op_id,
                     )
+
+                    if not started_ok:
+                        error_text = await _get_exchange_start_error(int(order_id))
+                        await _send_exchange_error_notice(
+                            order,
+                            error_text or "Не удалось запустить обмен. Причина не была сохранена.",
+                        )
+
                     return
 
                 except Exception as e:
                     logger.exception("Nirvana success received, but start_exchange_from_p2p failed")
 
-                    asset = _resolve_order_asset(order_id, order)
-                    user_mention = await _user_mention(bot, user_id)
-
-                    await _notify_admin(
-                        "❌ <b>P2P: оплата Nirvana прошла, но обмен не запустился</b>\n\n"
-                        f"Заявка: <b>#{order_id}</b>\n"
-                        f"Пользователь: {user_mention}\n"
-                        f"Asset: <b>{html.escape(str(asset))}</b>\n"
-                        f"Client ID: <code>{html.escape(client_id)}</code>\n"
-                        f"Ошибка: <code>{html.escape(str(e))}</code>"
-                    )
+                    await _send_exchange_error_notice(order, str(e))
 
                     with suppress(Exception):
                         await bot.send_message(
                             user_id,
                             "✅ Оплата подтверждена.\n"
-                            "Я уведомил оператора для ручного запуска обмена.",
+                            "Обмен не запустился автоматически, я уведомил администратора для ручного завершения.",
                         )
                     return
 
@@ -1159,7 +1455,7 @@ async def _paycore_watch_and_autostart(
 
                 user_mention = await _user_mention(bot, user_id)
                 await _notify_admin(
-                    "❌ <b>P2P: Nirvana вернула ошибочный статус</b>\n\n"
+                    "❌ <b>WebVidra: платёж не прошёл или был отменён</b>\n\n"
                     f"Заявка: <b>#{order_id}</b>\n"
                     f"Пользователь: {user_mention}\n"
                     f"Client ID: <code>{html.escape(client_id)}</code>\n"
