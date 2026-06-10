@@ -224,11 +224,11 @@ async def _ensure_order_ui_messages_table() -> None:
 
 
 async def _remember_order_ui_message(
-    order_id: int,
-    chat_id: Optional[int],
-    message_id: Optional[int],
-    *,
-    kind: str = "ff_ui",
+        order_id: int,
+        chat_id: Optional[int],
+        message_id: Optional[int],
+        *,
+        kind: str = "ff_ui",
 ) -> None:
     """
     Запоминает UI-сообщение заявки и в памяти, и в БД.
@@ -321,6 +321,79 @@ async def _forget_order_ui_messages(order_id: int) -> None:
         )
         await db.commit()
 
+
+def _kb_exchange_state_label(text: str, order_id: int) -> InlineKeyboardMarkup:
+    """
+    Однокнопочная клавиатура-лейбл для рабочих уведомлений по заявке.
+
+    Telegram не поддерживает полностью "некликабельные" inline-кнопки,
+    поэтому кнопка получает безопасный callback, который только показывает короткий answer
+    и ничего не меняет.
+    """
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            text,
+            callback_data=f"exchange_ui_locked:{int(order_id)}",
+        )
+    )
+    return kb
+
+
+async def _set_exchange_ui_state(bot: Bot, order_id: int, *, label: str) -> None:
+    """
+    Заменяет рабочие inline-кнопки у ВСЕХ уведомлений заявки на одну кнопку-статус.
+
+    Используется сразу после захвата старта обмена, чтобы админ и Mastercard
+    одновременно увидели, что заявка уже взята в работу, и не могли повторно
+    нажать «Готово — начать обмен».
+
+    Важно: сами сообщения не удаляются. Они остаются на месте до финального
+    уведомления/ручной финализации, где их уже удаляет _finalize_exchange_ui().
+    """
+    try:
+        oid = int(order_id)
+    except Exception:
+        return
+
+    if oid <= 0:
+        return
+
+    refs: Set[Tuple[int, int]] = set()
+    refs.update(STATE.ff_ui_messages_by_order.get(oid, set()))
+    refs.update(await _load_order_ui_messages(oid))
+
+    for key, msg_ref in list(STATE.pending_ff_ready_buttons.items()):
+        try:
+            _recipient_id, key_order_id = key
+            chat_id, message_id = msg_ref
+        except Exception:
+            continue
+
+        try:
+            if int(key_order_id) == oid:
+                refs.add((int(chat_id), int(message_id)))
+        except Exception:
+            continue
+
+    if not refs:
+        return
+
+    kb = _kb_exchange_state_label(label, oid)
+    for chat_id, message_id in list(refs):
+        with suppress(Exception):
+            await bot.edit_message_reply_markup(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=kb,
+            )
+
+
+async def handle_exchange_ui_locked(callback: types.CallbackQuery) -> None:
+    """Безопасный обработчик для кнопки-лейбла под уведомлением заявки."""
+    await callback.answer("Статус уже зафиксирован", show_alert=False)
+
+
 async def _cleanup_receipt_ui(bot: Bot, user_id: int, order_id: Optional[int] = None) -> None:
     """
     Удаляет служебные сообщения по чеку.
@@ -372,18 +445,19 @@ async def _build_mention(bot: Bot, user_id: int) -> str:
     except Exception:
         return f'<a href="tg://user?id={uid}">{html_escape(str(uid))}</a>'
 
+
 async def _update_user_status_card(
-    bot: Bot,
-    order_id: int,
-    *,
-    asset: str,
-    amount: float,
-    wallet: str,
-    step1_done: bool,
-    step2_done: bool,
-    step3_done: bool,
-    extra_line: str = "",
-    user_id: Optional[int] = None,
+        bot: Bot,
+        order_id: int,
+        *,
+        asset: str,
+        amount: float,
+        wallet: str,
+        step1_done: bool,
+        step2_done: bool,
+        step3_done: bool,
+        extra_line: str = "",
+        user_id: Optional[int] = None,
 ) -> None:
     order_id_int = int(order_id)
     msg_ref = STATE.status_cards.get(order_id_int)
@@ -516,11 +590,11 @@ async def _order_exchange_already_started_or_closed(order_id: int) -> bool:
 
 
 async def _show_support_button_after_wait(
-    bot: Bot,
-    *,
-    order_id: int,
-    user_id: int,
-    message_id: int,
+        bot: Bot,
+        *,
+        order_id: int,
+        user_id: int,
+        message_id: int,
 ) -> None:
     """
     Через 10 минут после появления карточки статуса добавляет кнопку поддержки,
@@ -652,7 +726,6 @@ async def _finalize_exchange_ui(bot: Bot, order_id: int, operator_id: Optional[i
     STATE.started_exchanges.discard(order_id_int)
 
 
-
 async def _admin_ids() -> List[int]:
     try:
         db = await get_db()
@@ -679,11 +752,11 @@ async def _admin_ids() -> List[int]:
 
 
 async def _notify_admin(
-    bot: Bot,
-    text: str,
-    *,
-    admin_ids: Optional[List[int]] = None,
-    exclude_ids: Optional[List[int]] = None,
+        bot: Bot,
+        text: str,
+        *,
+        admin_ids: Optional[List[int]] = None,
+        exclude_ids: Optional[List[int]] = None,
 ) -> None:
     ids = admin_ids if admin_ids is not None else await _admin_ids()
 
@@ -711,6 +784,7 @@ async def _notify_admin(
                 disable_web_page_preview=True,
             )
 
+
 def _is_out_of_limits_error(exc: Exception) -> bool:
     s = str(exc).lower()
     return ("out of limits" in s) or ("limits" in s) or ("limit" in s and "error" in s)
@@ -734,11 +808,11 @@ def _is_web_order(order: Optional[Dict[str, Any]]) -> bool:
     payment_method = str((order or {}).get("payment_method") or "").strip().lower()
 
     return (
-        comment.startswith("WEB")
-        or payment_method.startswith("vidrapay_")
-        or payment_method in {"vidrapay", "vidra-pay"}
-        or payment_method.startswith("vidrapay")
-        or payment_method.startswith("vidra-pay")
+            comment.startswith("WEB")
+            or payment_method.startswith("vidrapay_")
+            or payment_method in {"vidrapay", "vidra-pay"}
+            or payment_method.startswith("vidrapay")
+            or payment_method.startswith("vidra-pay")
     )
 
 
@@ -1104,7 +1178,6 @@ async def process_comment(message: types.Message, state: FSMContext) -> None:
     await state.finish()
 
 
-
 async def _get_mastercard_owner_id_for_order(order: Optional[Dict[str, Any]]) -> Optional[int]:
     """
     Возвращает владельца карты Mastercard по card_id заявки.
@@ -1441,6 +1514,7 @@ async def handle_paid(callback: types.CallbackQuery) -> None:
             from db.p2p import mark_p2p_action_sent
             await mark_p2p_action_sent(order_id_int, action_name)
 
+
 async def handle_cancel(callback: types.CallbackQuery) -> None:
     await callback.answer()
     with suppress(Exception):
@@ -1513,7 +1587,8 @@ async def handle_cancel(callback: types.CallbackQuery) -> None:
     if operator_id:
         mention = await _build_mention(callback.bot, user_id)
         with suppress(Exception):
-            await callback.bot.send_message(int(operator_id), f"🚫 Пользователь {mention} отменил инструкцию.", parse_mode="HTML")
+            await callback.bot.send_message(int(operator_id), f"🚫 Пользователь {mention} отменил инструкцию.",
+                                            parse_mode="HTML")
 
     if not p2p:
         await callback.bot.send_message(
@@ -1534,7 +1609,8 @@ async def handle_cancel(callback: types.CallbackQuery) -> None:
     await send_welcome(callback.bot, user_id)
 
 
-async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id: Optional[int] = None) -> bool:
+async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id: Optional[int] = None,
+                                  exchange_already_claimed: bool = False) -> bool:
     """
     Запускает обмен по заявке.
 
@@ -1586,14 +1662,15 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
         # а после ручного завершения эта же карточка обновится до 3 галочек.
 
         can_start = True
-        try:
-            from db.p2p import try_claim_p2p_action
-            can_start = await try_claim_p2p_action(int(db_order_id), "exchange_start")
-        except Exception:
-            can_start = False
+        if not exchange_already_claimed:
+            try:
+                from db.p2p import try_claim_p2p_action
+                can_start = await try_claim_p2p_action(int(db_order_id), "exchange_start")
+            except Exception:
+                can_start = False
 
-        if not can_start:
-            return False
+            if not can_start:
+                return False
 
         try:
             from services.ff import check_wallets_status
@@ -1709,7 +1786,8 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
                     STATE.status_cards[db_order_id] = (sent_card.chat.id, sent_card.message_id)
                     with suppress(Exception):
                         from db.p2p import mark_p2p_action_sent
-                        await mark_p2p_action_sent(int(db_order_id), "user_exchange_status_card", message_id=sent_card.message_id)
+                        await mark_p2p_action_sent(int(db_order_id), "user_exchange_status_card",
+                                                   message_id=sent_card.message_id)
 
         await _update_user_status_card(
             bot=bot,
@@ -1975,7 +2053,8 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
 
                 free_usdt = await _get_free_usdt()
                 if free_usdt <= 0:
-                    raise RuntimeError("На балансе Binance нет USDT и не удалось продать другие активы для покупки TON.")
+                    raise RuntimeError(
+                        "На балансе Binance нет USDT и не удалось продать другие активы для покупки TON.")
 
                 if need_usdt > free_usdt:
                     need_usdt = free_usdt.quantize(TON_Q, rounding=ROUND_DOWN)
@@ -2094,7 +2173,6 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
     finally:
         if not started_ok:
             STATE.started_exchanges.discard(db_order_id)
-
 
 
 def _humanize_exchange_error(raw_error: Any) -> str:
@@ -2265,10 +2343,23 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             )
         return kb
 
-    mastercard_error_kb = _build_order_kb(include_finish=False)
     admin_error_kb = _build_order_kb(include_finish=True)
 
+    def _short_wallet_for_mastercard(addr: str) -> str:
+        value = str(addr or "").strip()
+        if not value:
+            return "—"
+        if len(value) <= 12:
+            return value
+        return f"{value[:6]}…{value[-3:]}"
+
     async def _broadcast_exchange_error(error_text: str) -> None:
+        await _set_exchange_ui_state(
+            callback.bot,
+            int(real_order_id),
+            label="⚠️ Ошибка! Ожидайте админа!",
+        )
+
         current = p2p
         with suppress(Exception):
             from db.p2p import get_order_by_id
@@ -2325,8 +2416,6 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         except Exception:
             operator_name = ""
 
-        # Пользователь не должен видеть ошибку обмена.
-        # Оставляем/возвращаем ему только карточку процесса с 1 галочкой.
         if real_user_id > 0:
             with suppress(Exception):
                 await _update_user_status_card(
@@ -2357,8 +2446,18 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         )
 
         mastercard_error_text = (
-            "🚨 <b>ОШИБКА ОБМЕНА!</b>\n\n"
-            f"{common_details}"
+            "‼️<b>ОШИБКА ОБМЕНА</b>‼️\n"
+            "<b>Требуется ручная отправка!</b>\n\n"
+            f"🆔 Заявка №{html_escape(real_order_id)}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 Монета: {html_escape(asset_local)}\n"
+            f"📦 К выдаче: {html_escape(amount_crypto_str)} {html_escape(asset_local)}\n"
+            f"🏷 Кошелёк: <code>{html_escape(_short_wallet_for_mastercard(wallet_local))}</code>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"💳 Карта: {html_escape(card)}\n"
+            f"🏦 Банк: {html_escape(bank)}\n"
+            f"💸 Сумма: {html_escape(amount_rub)} ₽\n\n"
+            "⚠️ Админ сам запустит обмен, ничего делать не нужно!"
         )
 
         admin_error_text = (
@@ -2366,9 +2465,9 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             f"{common_details}"
         )
 
-        # Mastercard должен получить ошибку заменой того же уведомления.
-        initiator_kb = admin_error_kb if operator_role in ("Admin", "Operator") else mastercard_error_kb
-        initiator_text = admin_error_text if operator_role in ("Admin", "Operator") else mastercard_error_text
+        initiator_is_admin = operator_role in ("Admin", "Operator")
+        initiator_text = admin_error_text if initiator_is_admin else mastercard_error_text
+        initiator_kb = admin_error_kb if initiator_is_admin else None
 
         initiator_updated = False
         with suppress(Exception):
@@ -2400,7 +2499,6 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
                 )
                 await _remember_order_ui_message(int(real_order_id), sent.chat.id, sent.message_id)
 
-        # Админы получают отдельную карточку ошибки с кнопкой «Завершить».
         admin_ids = await _admin_ids()
         sent_once: Set[int] = set()
 
@@ -2436,30 +2534,87 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
             if user:
                 wallet = str(user.get("btc_wallet") or "").strip()
 
-    # ВАЖНО: кнопки скрываем сразу, чтобы исключить двойной клик.
-    # При ошибке обмена это же сообщение будет отредактировано и вернёт нужные кнопки.
-    with suppress(Exception):
-        await callback.message.edit_reply_markup(reply_markup=None)
+    await _remember_order_ui_message(int(real_order_id), callback.message.chat.id, callback.message.message_id)
 
     if not wallet:
+        await _set_exchange_ui_state(
+            callback.bot,
+            int(real_order_id),
+            label="⚠️ Ошибка! Ожидайте админа!",
+        )
         await _broadcast_exchange_error("wallet not found")
         return
+
+    exchange_claimed = False
+    try:
+        from db.p2p import try_claim_p2p_action
+        exchange_claimed = await try_claim_p2p_action(int(real_order_id), "exchange_start")
+    except Exception:
+        exchange_claimed = False
+
+    if not exchange_claimed:
+        action_status = ""
+        error_text = ""
+        with suppress(Exception):
+            db = await get_db()
+            cur = await db.execute(
+                """
+                SELECT status, error
+                  FROM p2p_order_actions
+                 WHERE order_id = ? AND action = ?
+                 LIMIT 1
+                """,
+                (int(real_order_id), "exchange_start"),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            if row:
+                action_status = str(row[0] or "").strip().lower()
+                error_text = str(row[1] or "").strip()
+
+        if action_status in {"claimed", "sent"} and not error_text:
+            await _set_exchange_ui_state(
+                callback.bot,
+                int(real_order_id),
+                label="🔄 Обмен запущен",
+            )
+            with suppress(Exception):
+                await callback.bot.send_message(
+                    operator_id,
+                    f"ℹ️ Обмен по заявке №<b>{real_order_id}</b> уже запущен другим участником.",
+                    parse_mode="HTML",
+                )
+            return
+
+        await _set_exchange_ui_state(
+            callback.bot,
+            int(real_order_id),
+            label="⚠️ Ошибка! Ожидайте админа!",
+        )
+        await _broadcast_exchange_error(error_text or "Не удалось запустить обмен. Причина не была сохранена.")
+        return
+
+    await _set_exchange_ui_state(
+        callback.bot,
+        int(real_order_id),
+        label="🔄 Обмен запущен",
+    )
 
     try:
         started = await start_exchange_from_p2p(
             bot=callback.bot,
             p2p=p2p,
             operator_id=operator_id,
+            exchange_already_claimed=True,
         )
 
         if not started:
-            action_status = ""
             error_text = ""
             with suppress(Exception):
                 db = await get_db()
                 cur = await db.execute(
                     """
-                    SELECT status, error
+                    SELECT error
                       FROM p2p_order_actions
                      WHERE order_id = ? AND action = ?
                      LIMIT 1
@@ -2469,31 +2624,15 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
                 row = await cur.fetchone()
                 await cur.close()
                 if row:
-                    action_status = str(row[0] or "").strip().lower()
-                    error_text = str(row[1] or "").strip()
+                    error_text = str(row[0] or "").strip()
 
-            # Если второй участник нажал «Готово» после первого, это не ошибка обмена.
-            # Просто убираем кнопки у второго уведомления и не показываем пользователю/админам ложную ошибку.
-            if action_status in {"claimed", "sent"} and not error_text:
-                with suppress(Exception):
-                    await callback.message.edit_reply_markup(reply_markup=None)
-                with suppress(Exception):
-                    await callback.bot.send_message(
-                        operator_id,
-                        f"ℹ️ Обмен по заявке №<b>{real_order_id}</b> уже запущен другим участником.",
-                        parse_mode="HTML",
-                    )
-                return
-
+            await _set_exchange_ui_state(
+                callback.bot,
+                int(real_order_id),
+                label="⚠️ Ошибка! Ожидайте админа!",
+            )
             await _broadcast_exchange_error(error_text or "Не удалось запустить обмен. Причина не была сохранена.")
             return
-
-        await _remember_order_ui_message(int(real_order_id), callback.message.chat.id, callback.message.message_id)
-        await _finalize_exchange_ui(
-            bot=callback.bot,
-            order_id=int(real_order_id),
-            operator_id=int(operator_id),
-        )
 
         with suppress(Exception):
             db = await get_db()
@@ -2518,7 +2657,6 @@ async def handle_ff_ready(callback: types.CallbackQuery) -> None:
         await _broadcast_exchange_error(str(e))
 
 
-
 async def handle_finish_order(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
@@ -2526,7 +2664,8 @@ async def handle_finish_order(callback: types.CallbackQuery) -> None:
     operator = await get_user(operator_id)
     if not operator or operator.get("role") not in ("Operator", "Admin"):
         with suppress(Exception):
-            await callback.bot.send_message(operator_id, "⚠️ Завершение заявки доступно только администратору/оператору.")
+            await callback.bot.send_message(operator_id,
+                                            "⚠️ Завершение заявки доступно только администратору/оператору.")
         return
 
     parts = (callback.data or "").split(":")
@@ -2771,9 +2910,9 @@ async def handle_finish_order_link(message: types.Message) -> None:
             try:
                 op_chat = await message.bot.get_chat(int(operator_id))
                 operator_username_for_msg = (
-                    getattr(op_chat, "username", "")
-                    or getattr(op_chat, "full_name", "")
-                    or ""
+                        getattr(op_chat, "username", "")
+                        or getattr(op_chat, "full_name", "")
+                        or ""
                 )
             except Exception:
                 operator_username_for_msg = ""
@@ -2913,13 +3052,13 @@ async def handle_finish_order_link(message: types.Message) -> None:
 
 
 async def track_ff_order_status(
-    bot: Bot,
-    user_id: int,
-    ff_order_id: str,
-    token: str,
-    db_order_id: int,
-    asset: Optional[str] = None,
-    exchange_started_by_id: Optional[int] = None,
+        bot: Bot,
+        user_id: int,
+        ff_order_id: str,
+        token: str,
+        db_order_id: int,
+        asset: Optional[str] = None,
+        exchange_started_by_id: Optional[int] = None,
 ) -> None:
     from db.p2p import get_order_by_id
 
@@ -3217,7 +3356,8 @@ async def track_ff_order_status(
                             mc_user = await get_user(int(mastercard_owner_id))
                             raw_mc_username = str((mc_user or {}).get("username") or "").strip()
                             if raw_mc_username:
-                                mastercard_mention = raw_mc_username if raw_mc_username.startswith("@") else f"@{raw_mc_username}"
+                                mastercard_mention = raw_mc_username if raw_mc_username.startswith(
+                                    "@") else f"@{raw_mc_username}"
                             else:
                                 mastercard_mention = f"user_id {int(mastercard_owner_id)}"
 
@@ -3610,7 +3750,8 @@ async def handle_op_reject_receipt(callback: types.CallbackQuery) -> None:
         await callback.message.delete()
 
     prompt = await callback.bot.send_message(operator_id, "⚠️ Введите причину отказа чека:", parse_mode="HTML")
-    STATE.pending_reject_reasons[operator_id] = {"user_id": user_id, "order_id": order_id, "prompt_id": prompt.message_id}
+    STATE.pending_reject_reasons[operator_id] = {"user_id": user_id, "order_id": order_id,
+                                                 "prompt_id": prompt.message_id}
 
 
 async def handle_op_reject_reason(message: types.Message) -> None:
@@ -3681,6 +3822,11 @@ def register_instruction_handlers(dp: Dispatcher) -> None:
     dp.register_callback_query_handler(
         handle_op_view_receipt,
         lambda c: (c.data or "").startswith("op_view_receipt:"),
+        state="*",
+    )
+    dp.register_callback_query_handler(
+        handle_exchange_ui_locked,
+        lambda c: (c.data or "").startswith("exchange_ui_locked:"),
         state="*",
     )
     dp.register_callback_query_handler(
