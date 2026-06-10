@@ -146,6 +146,7 @@ async def get_user_bank(user_id: int) -> Optional[str]:
 class RuntimeState:
     pending_check_receipts: Dict[int, int] = field(default_factory=dict)
     receipt_ui_messages: Dict[int, Set[int]] = field(default_factory=dict)
+    receipt_ui_messages_by_order: Dict[int, Set[Tuple[int, int]]] = field(default_factory=dict)
     pending_reject_reasons: Dict[int, Dict[str, int]] = field(default_factory=dict)
     pending_ff_ready_buttons: Dict[Tuple[int, int], Tuple[int, int]] = field(default_factory=dict)
     pending_operator_order_cards: Dict[Tuple[int, int], Tuple[int, int]] = field(default_factory=dict)
@@ -164,6 +165,26 @@ def _track_receipt_msg(user_id: int, message_id: Optional[int]) -> None:
     if not message_id:
         return
     STATE.receipt_ui_messages.setdefault(user_id, set()).add(int(message_id))
+
+
+def _track_receipt_order_msg(order_id: int, chat_id: Optional[int], message_id: Optional[int]) -> None:
+    """
+    Запоминает служебные сообщения по чеку, которые нужно удалить при старте/финале обмена.
+    В отличие от receipt_ui_messages по user_id, здесь можно хранить сообщения и у пользователя,
+    и у админа/Mastercard.
+    """
+    try:
+        oid = int(order_id)
+        cid = int(chat_id)
+        mid = int(message_id)
+    except Exception:
+        return
+
+    if oid <= 0 or cid == 0 or mid <= 0:
+        return
+
+    STATE.receipt_ui_messages_by_order.setdefault(oid, set()).add((cid, mid))
+
 
 def _track_ff_ui_message(order_id: int, chat_id: Optional[int], message_id: Optional[int]) -> None:
     try:
@@ -300,11 +321,32 @@ async def _forget_order_ui_messages(order_id: int) -> None:
         )
         await db.commit()
 
-async def _cleanup_receipt_ui(bot: Bot, user_id: int) -> None:
+async def _cleanup_receipt_ui(bot: Bot, user_id: int, order_id: Optional[int] = None) -> None:
+    """
+    Удаляет служебные сообщения по чеку.
+
+    Что чистим:
+    - сообщения у пользователя, которые были сохранены по user_id;
+    - сообщения у пользователя/админа/Mastercard, сохранённые по order_id
+      (например: «Запрос чека отправлен...» у оператора).
+    """
     ids = STATE.receipt_ui_messages.pop(user_id, set())
     for mid in ids:
         with suppress(Exception):
             await safe_delete(bot, user_id, mid)
+
+    if order_id is None:
+        return
+
+    try:
+        oid = int(order_id)
+    except Exception:
+        return
+
+    refs = STATE.receipt_ui_messages_by_order.pop(oid, set())
+    for chat_id, message_id in refs:
+        with suppress(Exception):
+            await safe_delete(bot, int(chat_id), int(message_id))
 
 
 async def _auto_delete(bot: Bot, chat_id: int, message_id: int, delay: int = 6) -> None:
@@ -515,6 +557,12 @@ async def _show_support_button_after_wait(
 
 async def _finalize_exchange_ui(bot: Bot, order_id: int, operator_id: Optional[int]) -> None:
     order_id_int = int(order_id)
+
+    # 0) Удаляем служебные сообщения по чеку у пользователя/админа/Mastercard.
+    receipt_refs = STATE.receipt_ui_messages_by_order.pop(order_id_int, set())
+    for chat_id, message_id in list(receipt_refs):
+        with suppress(Exception):
+            await bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
 
     # 1) Собираем ВСЕ UI-сообщения по заявке:
     #    - из памяти текущего процесса;
@@ -1525,7 +1573,7 @@ async def start_exchange_from_p2p(*, bot: Bot, p2p: Dict[str, Any], operator_id:
 
     try:
         with suppress(Exception):
-            await _cleanup_receipt_ui(bot, user_id)
+            await _cleanup_receipt_ui(bot, user_id, db_order_id)
 
         with suppress(Exception):
             if user_id in pending_buy_messages:
@@ -3121,87 +3169,174 @@ async def track_ff_order_status(
                 logger.exception("Ошибка при отправке финального сообщения пользователю по заявке %s", db_order_id)
 
         try:
-            can_notify_admin = True
+            can_notify_completed = True
             try:
                 from db.p2p import try_claim_p2p_action
-                can_notify_admin = await try_claim_p2p_action(int(db_order_id), "admin_completed_notify")
+                can_notify_completed = await try_claim_p2p_action(int(db_order_id), "admin_completed_notify")
             except Exception:
-                can_notify_admin = True
+                can_notify_completed = True
 
-            if can_notify_admin:
+            if can_notify_completed:
                 mention_user = await _build_mention(bot, user_id)
 
-                pay_method = str((current or {}).get("payment_method") or "—")
                 bank_name = str((current or {}).get("bank_name") or fb_bank or "—")
                 requisite = str((current or {}).get("bank_card") or fb_card or "—")
                 rub_raw = (current or {}).get("total_rub")
                 try:
                     rub_sum = f"{int(float(rub_raw))} ₽" if rub_raw is not None else "—"
                 except Exception:
-                    rub_sum = html_escape(str(rub_raw or "—"))
+                    rub_sum = f"{rub_raw or '—'}"
 
-                requisite_html = format_requisite_for_user(requisite)
+                wallet_str = str(wallet or "").strip()
+                full_wallet_html = f"<code>{html_escape(wallet_str or '—')}</code>"
+                mastercard_wallet_raw = wallet_str
+                if mastercard_wallet_raw and len(mastercard_wallet_raw) > 12:
+                    mastercard_wallet_raw = f"{mastercard_wallet_raw[:6]}…{mastercard_wallet_raw[-3:]}"
+                elif not mastercard_wallet_raw:
+                    mastercard_wallet_raw = "—"
 
-                msg = (
-                    "✅ <b>Сделка завершена</b>\n\n"
-                    f"🆔 Заявка: <b>#{db_order_id}</b>\n"
-                    f"👤 Пользователь: {mention_user}\n"
-                    f"👤 ID: <b>{user_id}</b>\n"
-                    f"🧑‍💼 Админ/Оператор: <b>{html_escape(operator_username or '—')}</b>\n"
-                    f"💳 Метод: <b>{html_escape(pay_method)}</b>\n\n"
-                    f"🪙 Монета: <b>{html_escape(asset_code)}</b>\n"
-                    f"📦 К выдаче: <b>{html_escape(amount_str)} {html_escape(asset_code)}</b>\n"
-                    f"🏷 Адрес: <code>{html_escape(short_wallet)}</code>\n"
-                    f"💸 Сумма: <b>{html_escape(rub_sum)}</b>\n\n"
-                    f"🏦 Банк: <b>{html_escape(bank_name)}</b>\n"
-                    f"💳 Реквизит: {requisite_html}\n\n"
-                    f"{tx_link_line}"
-                )
-
-                completed_notify_recipient_ids: List[int] = []
-
-                # operator_id в заявке не всегда равен Mastercard, который нажал
-                # «Готово — начать обмен». Поэтому финальное уведомление отправляем:
-                # 1) оператору из заявки, если он есть;
-                # 2) тому, кто фактически запустил автообмен кнопкой ff_ready;
-                # 3) владельцу Mastercard-реквизита по card_id заявки.
-                for raw_recipient_id in (operator_id, exchange_started_by_id):
-                    with suppress(Exception):
-                        recipient_id = int(raw_recipient_id)
-                        if recipient_id > 0 and recipient_id not in completed_notify_recipient_ids:
-                            completed_notify_recipient_ids.append(recipient_id)
+                tx_block = tx_link_line
+                if not tx_block:
+                    tx_block = "🔗 Tx: <b>не удалось получить ссылку</b>"
 
                 mastercard_owner_id: Optional[int] = None
                 with suppress(Exception):
                     mastercard_owner_id = await _get_mastercard_owner_id_for_order(current)
 
+                mastercard_mention = "—"
+                if mastercard_owner_id:
+                    with suppress(Exception):
+                        mc_chat = await bot.get_chat(int(mastercard_owner_id))
+                        if getattr(mc_chat, "username", None):
+                            mastercard_mention = f"@{mc_chat.username}"
+                        else:
+                            mastercard_mention = html_escape(getattr(mc_chat, "full_name", str(mastercard_owner_id)))
+
+                    if mastercard_mention == "—":
+                        with suppress(Exception):
+                            mc_user = await get_user(int(mastercard_owner_id))
+                            raw_mc_username = str((mc_user or {}).get("username") or "").strip()
+                            if raw_mc_username:
+                                mastercard_mention = raw_mc_username if raw_mc_username.startswith("@") else f"@{raw_mc_username}"
+                            else:
+                                mastercard_mention = f"user_id {int(mastercard_owner_id)}"
+
+                admin_msg = (
+                    "✅ <b>Сделка завершена</b>\n\n"
+                    f"🆔 Заявка: <b>#{db_order_id}</b>\n"
+                    f"👤 Пользователь: {mention_user}\n"
+                    f"👤 ID: <b>{user_id}</b>\n"
+                    f"🧑‍💼 Mastercard: <b>{html_escape(mastercard_mention)}</b>\n\n"
+                    f"🪙 Монета: <b>{html_escape(asset_code)}</b>\n"
+                    f"📦 К выдаче: <b>{html_escape(amount_str)} {html_escape(asset_code)}</b>\n"
+                    f"🏷 Адрес: {full_wallet_html}\n"
+                    f"💸 Сумма: <b>{html_escape(rub_sum)}</b>\n\n"
+                    f"🏦 Банк: <b>{html_escape(bank_name)}</b>\n"
+                    f"💳 Реквизит: <code>{html_escape(requisite)}</code>\n\n"
+                    f"{tx_block}"
+                )
+
+                mastercard_msg = (
+                    "✅ <b>Сделка завершена</b>\n\n"
+                    f"🆔 Заявка: <b>#{db_order_id}</b>\n"
+                    f"🪙 Монета: <b>{html_escape(asset_code)}</b>\n"
+                    f"📦 К выдаче: <b>{html_escape(amount_str)} {html_escape(asset_code)}</b>\n"
+                    f"🏷 Адрес: <code>{html_escape(mastercard_wallet_raw)}</code>\n"
+                    f"💸 Сумма: <b>{html_escape(rub_sum)}</b>\n\n"
+                    f"🏦 Банк: <b>{html_escape(bank_name)}</b>\n"
+                    f"💳 Реквизит: <code>{html_escape(requisite)}</code>"
+                )
+
+                admin_recipient_ids: List[int] = []
+                mastercard_recipient_ids: List[int] = []
+                extra_operator_recipient_ids: List[int] = []
+
+                for aid in await _admin_ids():
+                    with suppress(Exception):
+                        aid_int = int(aid)
+                        if aid_int > 0 and aid_int not in admin_recipient_ids:
+                            admin_recipient_ids.append(aid_int)
+
+                async def _role_of_user(raw_id: Any) -> str:
+                    try:
+                        uid = int(raw_id or 0)
+                    except Exception:
+                        return ""
+                    if uid <= 0:
+                        return ""
+                    with suppress(Exception):
+                        user = await get_user(uid)
+                        return str((user or {}).get("role") or "").strip().lower()
+                    return ""
+
                 if mastercard_owner_id:
                     with suppress(Exception):
                         mc_id = int(mastercard_owner_id)
-                        if mc_id > 0 and mc_id not in completed_notify_recipient_ids:
-                            completed_notify_recipient_ids.append(mc_id)
+                        if mc_id > 0 and mc_id not in mastercard_recipient_ids:
+                            mastercard_recipient_ids.append(mc_id)
 
-                for recipient_id in completed_notify_recipient_ids:
+                for raw_recipient_id in (operator_id, exchange_started_by_id):
+                    with suppress(Exception):
+                        recipient_id = int(raw_recipient_id)
+                        if recipient_id <= 0:
+                            continue
+
+                        role = await _role_of_user(recipient_id)
+                        if role == "mastercard":
+                            if recipient_id not in mastercard_recipient_ids:
+                                mastercard_recipient_ids.append(recipient_id)
+                        elif role == "admin":
+                            if recipient_id not in admin_recipient_ids:
+                                admin_recipient_ids.append(recipient_id)
+                        else:
+                            if recipient_id not in extra_operator_recipient_ids:
+                                extra_operator_recipient_ids.append(recipient_id)
+
+                sent_completed_to: Set[int] = set()
+
+                for recipient_id in admin_recipient_ids:
+                    if recipient_id in sent_completed_to:
+                        continue
+                    sent_completed_to.add(recipient_id)
                     with suppress(Exception):
                         await bot.send_message(
                             int(recipient_id),
-                            msg,
+                            admin_msg,
                             parse_mode="HTML",
                             disable_web_page_preview=True,
                         )
 
-                await _notify_admin(
-                    bot,
-                    msg,
-                    exclude_ids=completed_notify_recipient_ids,
-                )
+                for recipient_id in mastercard_recipient_ids:
+                    if recipient_id in sent_completed_to:
+                        continue
+                    sent_completed_to.add(recipient_id)
+                    with suppress(Exception):
+                        await bot.send_message(
+                            int(recipient_id),
+                            mastercard_msg,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+
+                # На случай старой роли Operator оставляем уведомление, но в админском полном формате.
+                for recipient_id in extra_operator_recipient_ids:
+                    if recipient_id in sent_completed_to:
+                        continue
+                    sent_completed_to.add(recipient_id)
+                    with suppress(Exception):
+                        await bot.send_message(
+                            int(recipient_id),
+                            admin_msg,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
 
                 with suppress(Exception):
                     from db.p2p import mark_p2p_action_sent
                     await mark_p2p_action_sent(int(db_order_id), "admin_completed_notify")
 
         except Exception:
-            logger.exception("Failed to notify admins about completed deal (order_id=%s)", db_order_id)
+            logger.exception("Failed to notify admins/mastercard about completed deal (order_id=%s)", db_order_id)
             with suppress(Exception):
                 from db.p2p import mark_p2p_action_failed
                 await mark_p2p_action_failed(int(db_order_id), "admin_completed_notify", error="notify failed")
@@ -3360,6 +3495,7 @@ async def handle_check_from_user(message: types.Message) -> None:
         )
         with suppress(Exception):
             STATE.pending_ff_ready_buttons[(int(operator_id), int(db_order_id))] = (sent_op.chat.id, sent_op.message_id)
+        _track_receipt_order_msg(int(db_order_id), sent_op.chat.id, sent_op.message_id)
     except Exception:
         sent_fail = await message.answer("⚠️ Не удалось доставить чек оператору. Попробуйте ещё раз позже.")
         _track_receipt_msg(user_id, sent_fail.message_id)
@@ -3367,6 +3503,7 @@ async def handle_check_from_user(message: types.Message) -> None:
 
     sent_ok = await message.answer("🧾 Чек отправлен оператору и находится на проверке.", parse_mode="HTML")
     _track_receipt_msg(user_id, sent_ok.message_id)
+    _track_receipt_order_msg(int(db_order_id), sent_ok.chat.id, sent_ok.message_id)
 
 
 async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
@@ -3387,11 +3524,12 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
     STATE.pending_check_receipts[user_id] = operator_id
 
     mention = await _build_mention(callback.bot, user_id)
-    await callback.bot.send_message(
+    sent_operator_notice = await callback.bot.send_message(
         operator_id,
         f"🧾 Запрос чека отправлен пользователю {mention} по заявке №<b>{order_id}</b>.",
         parse_mode="HTML",
     )
+    _track_receipt_order_msg(order_id, sent_operator_notice.chat.id, sent_operator_notice.message_id)
 
     kb = InlineKeyboardMarkup().add(
         InlineKeyboardButton("📎 Прикрепить чек (PDF)", callback_data=f"op_attach_receipt:{operator_id}")
@@ -3405,6 +3543,7 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
     try:
         sent = await callback.bot.send_message(user_id, user_text, parse_mode="HTML", reply_markup=kb)
         _track_receipt_msg(user_id, sent.message_id)
+        _track_receipt_order_msg(order_id, sent.chat.id, sent.message_id)
     except Exception:
         with suppress(Exception):
             await callback.bot.send_message(operator_id, "⚠️ Пользователь недоступен: запрос чека не доставлен.")

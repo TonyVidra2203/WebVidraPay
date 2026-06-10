@@ -2532,10 +2532,39 @@ async def ask_receipt_pdf(callback: types.CallbackQuery, state: FSMContext) -> N
         await callback.bot.send_message(user_id, "⚠️ Активная заявка не найдена. Создайте новую заявку.")
         return
 
-    await callback.bot.send_message(
+    sent = await callback.bot.send_message(
         user_id,
         "📄 Отправьте чек об оплате PDF-файлом.",
     )
+
+    # Это сообщение создаётся в p2p.py, а обмен стартует/чистит UI в instruction.py.
+    # Поэтому сохраняем message_id в общую таблицу p2p_order_ui_messages,
+    # которую _finalize_exchange_ui удаляет при старте обмена.
+    with suppress(Exception):
+        order_id = int(order.get("order_id") or 0)
+        if order_id > 0:
+            db = await get_db()
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS p2p_order_ui_messages (
+                    order_id   INTEGER NOT NULL,
+                    chat_id    INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    kind       TEXT NOT NULL DEFAULT 'ff_ui',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (order_id, chat_id, message_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO p2p_order_ui_messages
+                    (order_id, chat_id, message_id, kind)
+                VALUES (?, ?, ?, ?)
+                """,
+                (order_id, int(sent.chat.id), int(sent.message_id), "receipt_pdf_prompt"),
+            )
+            await db.commit()
 
     await P2PStates.await_receipt_pdf.set()
 
