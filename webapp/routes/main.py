@@ -3,6 +3,8 @@ import html
 from pathlib import Path
 import math
 import secrets
+from io import BytesIO
+from contextlib import suppress
 
 import utils.helpers as helpers
 from utils.helpers import (
@@ -13,7 +15,7 @@ from utils.helpers import (
     validate_wallet_for_asset,
 )
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -351,6 +353,229 @@ async def _calculate_coin_amount_for_web(asset: str, rub_amount: float) -> float
         coin_amount=None,
     )
     return float(quote["coin_amount"])
+
+
+
+def _ensure_web_support_tables_sync() -> None:
+    """Создаёт локальные таблицы для WEB-чека и WEB/SMS-чата."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS p2p_web_receipts (
+                order_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                requested_by INTEGER,
+                status TEXT NOT NULL DEFAULT 'requested',
+                filename TEXT,
+                requested_at TEXT,
+                uploaded_at TEXT,
+                rejected_at TEXT,
+                reject_reason TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS p2p_web_sms_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                sender TEXT NOT NULL,
+                worker_id INTEGER,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS p2p_web_sms_cards (
+                order_id INTEGER NOT NULL,
+                worker_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(order_id, worker_id)
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _web_get_order_extras(order_id: int) -> dict:
+    """Возвращает WEB-чек и WEB/SMS-сообщения для отображения на сайте."""
+    _ensure_web_support_tables_sync()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT order_id, user_id, requested_by, status, filename,
+                   requested_at, uploaded_at, rejected_at, reject_reason
+              FROM p2p_web_receipts
+             WHERE order_id = ?
+             LIMIT 1
+            """,
+            (int(order_id),),
+        )
+        receipt_row = cur.fetchone()
+        receipt = dict(receipt_row) if receipt_row else None
+
+        cur.execute(
+            """
+            SELECT sender, worker_id, text, created_at
+              FROM p2p_web_sms_messages
+             WHERE order_id = ?
+             ORDER BY id ASC
+             LIMIT 100
+            """,
+            (int(order_id),),
+        )
+        chat_messages = [dict(row) for row in cur.fetchall()]
+
+        return {
+            "receipt": receipt,
+            "chat_messages": chat_messages,
+        }
+    finally:
+        conn.close()
+
+
+def _web_html_to_text(value: str) -> str:
+    return html.escape(str(value or "").strip())
+
+
+async def _send_web_receipt_to_workers(order: dict, file_bytes: bytes, filename: str) -> None:
+    """Отправляет PDF-чек с сайта всем Admin и Mastercard-владельцу карты заявки."""
+    from aiogram import Bot
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+
+    from config.settings import settings
+    from db.users import get_user
+    from handlers.chat.instruction import (
+        STATE,
+        _admin_ids,
+        _get_mastercard_owner_id_for_order,
+        _remember_order_ui_message,
+    )
+
+    order_id = int(order.get("order_id") or 0)
+    user_id = int(order.get("user_id") or 0)
+    if order_id <= 0:
+        return
+
+    bot_token = (
+        getattr(settings, "bot_token", None)
+        or getattr(settings, "BOT_TOKEN", None)
+        or getattr(settings, "telegram_bot_token", None)
+        or getattr(settings, "TELEGRAM_BOT_TOKEN", None)
+    )
+    if not bot_token:
+        return
+
+    recipients: list[int] = []
+    with suppress(Exception):
+        mc_owner = await _get_mastercard_owner_id_for_order(order)
+        if mc_owner:
+            recipients.append(int(mc_owner))
+
+    with suppress(Exception):
+        recipients.extend([int(x) for x in await _admin_ids()])
+
+    seen: set[int] = set()
+    unique: list[int] = []
+    for raw in recipients:
+        try:
+            rid = int(raw)
+        except Exception:
+            continue
+        if rid > 0 and rid not in seen:
+            seen.add(rid)
+            unique.append(rid)
+
+    if not unique:
+        return
+
+    card = str(order.get("bank_card") or "—").strip() or "—"
+    bank = str(order.get("bank_name") or "—").strip() or "—"
+    try:
+        amount_rub = int(float(order.get("total_rub") or 0))
+    except Exception:
+        amount_rub = str(order.get("total_rub") or "—")
+
+    caption = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🧾 <b>ЧЕК С САЙТА</b>\n"
+        f"Заявка: <b>#{html.escape(str(order_id))}</b>\n\n"
+        "Данные для сверки:\n"
+        f"• Номер: <code>{html.escape(card)}</code>\n"
+        f"• Банк:  {html.escape(bank)}\n"
+        f"• Сумма: <b>{html.escape(str(amount_rub))} ₽</b>"
+    )
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("❌ Отклонить чек", callback_data=f"op_reject_receipt:{user_id}:{order_id}"),
+        InlineKeyboardButton("📥 Открыть заявку", callback_data=f"operator_open_order:{user_id}:{order_id}"),
+    )
+    kb.add(InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{order_id}:{user_id}"))
+    kb.add(InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{order_id}:{user_id}"))
+
+    bot = Bot(token=bot_token)
+    try:
+        for recipient_id in unique:
+            try:
+                bio = BytesIO(file_bytes)
+                bio.name = filename or f"receipt_{order_id}.pdf"
+                sent = await bot.send_document(
+                    int(recipient_id),
+                    document=InputFile(bio, filename=bio.name),
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+                with suppress(Exception):
+                    STATE.pending_ff_ready_buttons[(int(recipient_id), int(order_id))] = (
+                        sent.chat.id,
+                        sent.message_id,
+                    )
+                with suppress(Exception):
+                    await _remember_order_ui_message(int(order_id), sent.chat.id, sent.message_id)
+            except Exception:
+                continue
+    finally:
+        await bot.session.close()
+
+
+async def _notify_workers_about_web_user_message(order: dict) -> None:
+    """Обновляет карточки WEB/SMS-чата у Admin и Mastercard после сообщения с сайта."""
+    from aiogram import Bot
+    from config.settings import settings
+    from handlers.chat.operator import _send_or_refresh_web_sms_cards
+
+    bot_token = (
+        getattr(settings, "bot_token", None)
+        or getattr(settings, "BOT_TOKEN", None)
+        or getattr(settings, "telegram_bot_token", None)
+        or getattr(settings, "TELEGRAM_BOT_TOKEN", None)
+    )
+    if not bot_token:
+        return
+
+    bot = Bot(token=bot_token)
+    try:
+        await _send_or_refresh_web_sms_cards(
+            bot,
+            order_id=int(order.get("order_id") or 0),
+            user_id=int(order.get("user_id") or 0),
+            fallback_worker_id=int(order.get("operator_id") or 0) or None,
+        )
+    finally:
+        await bot.session.close()
 
 
 async def _build_order_quote_for_web(
@@ -777,6 +1002,11 @@ def _serialize_order(row, focus_order_id=None):
     meta = _status_meta(order)
     is_active_for_web = _is_order_active_for_web(order)
 
+    web_extras = _web_get_order_extras(order_id) if order_id > 0 else {"receipt": None, "chat_messages": []}
+    web_receipt = web_extras.get("receipt") or {}
+    web_chat_messages = web_extras.get("chat_messages") or []
+    web_receipt_status = str(web_receipt.get("status") or "").strip().lower()
+
     order["order_id"] = order_id
     order["coin"] = coin
     order["btc_amount"] = _safe_float(order.get("btc_amount"))
@@ -824,6 +1054,14 @@ def _serialize_order(row, focus_order_id=None):
     order["show_web_expire_timer"] = show_web_expire_timer
     order["web_expire_seconds_left"] = web_expire_seconds_left
     order["web_expire_minutes_left"] = max(1, math.ceil(web_expire_seconds_left / 60)) if web_expire_seconds_left > 0 else 0
+
+    order["web_receipt_status"] = web_receipt_status
+    order["web_receipt_requested"] = web_receipt_status in {"requested", "rejected"}
+    order["web_receipt_uploaded"] = web_receipt_status == "uploaded"
+    order["web_receipt_filename"] = str(web_receipt.get("filename") or "")
+    order["web_receipt_reject_reason"] = str(web_receipt.get("reject_reason") or "")
+    order["web_chat_messages"] = web_chat_messages
+    order["web_chat_has_messages"] = bool(web_chat_messages)
 
     return order
 
@@ -1386,6 +1624,8 @@ async def mark_order_paid(request: Request, order_id: int):
         return RedirectResponse(url="/orders/new", status_code=303)
 
     try:
+        from contextlib import suppress
+
         from aiogram import Bot
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -1393,17 +1633,32 @@ async def mark_order_paid(request: Request, order_id: int):
         from db.p2p import (
             get_order_by_id,
             mark_order_paid_from_web,
+            mark_p2p_action_sent,
             save_operator_notification,
             try_claim_p2p_action,
         )
-        from db.users import get_all_users, get_user
+        from db.users import get_user
+        from handlers.chat.instruction import (
+            STATE,
+            _admin_ids,
+            _extract_asset_from_comment,
+            _format_amount_for_asset,
+            _get_mastercard_owner_id_for_order,
+            _remember_order_ui_message,
+            _short_wallet,
+        )
+
+        try:
+            current_user_id_int = int(current_user_id)
+        except Exception:
+            return RedirectResponse(url="/orders/new", status_code=303)
 
         if guest_mode:
             allowed_order_ids = set(get_guest_order_ids(request))
             if int(order_id) not in allowed_order_ids:
                 return RedirectResponse(url="/orders", status_code=303)
 
-        updated = await mark_order_paid_from_web(int(order_id), int(current_user_id))
+        updated = await mark_order_paid_from_web(int(order_id), int(current_user_id_int))
         if not updated:
             return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
@@ -1411,11 +1666,15 @@ async def mark_order_paid(request: Request, order_id: int):
         if not order:
             return RedirectResponse(url="/orders", status_code=303)
 
-        operator_id = _safe_int(order.get("operator_id"), 0)
-        if operator_id <= 0:
-            return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+        order_user_id = _safe_int(order.get("user_id"), 0)
+        if order_user_id != int(current_user_id_int):
+            return RedirectResponse(url="/orders", status_code=303)
 
-        if not await try_claim_p2p_action(int(order_id), "web_paid_notify_operator"):
+        # Важно: используем тот же ключ идемпотентности, что и TG/VidraPay-ветка
+        # в handlers/chat/instruction.py::handle_paid(). Тогда повторные клики из WEB
+        # не создают вторую пачку уведомлений, а финал/ошибки видят те же UI-сообщения.
+        action_name = "operator_paid_notify_web"
+        if not await try_claim_p2p_action(int(order_id), action_name):
             return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
         bot_token = (
@@ -1429,91 +1688,190 @@ async def mark_order_paid(request: Request, order_id: int):
 
         bot = Bot(token=bot_token)
         try:
-            op_user = await get_user(int(operator_id))
-            if not op_user:
-                return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
-
-            card = str(order.get("bank_card") or "").strip() or "—"
-            bank = str(order.get("bank_name") or "").strip() or "—"
-            amount_rub = math.ceil(float(order.get("total_rub") or 0))
-            mention = str(order.get("user_link") or f"user_id={int(current_user_id)}")
-
-            admin_text = (
-                "━━━━━━━━━━━━━━━━━━\n"
-                "‼️<b>Подтверждение оплаты из WEB!</b>‼️\n\n"
-                f"👤 {mention}\n"
-                f"🆔 <b>Заявка №{int(order_id)}</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"💳 <b>Карта:</b> <code>{card}</code>\n"
-                f"🏦 <b>Банк:</b> {bank}\n"
-                f"💸 <b>Сумма:</b> <b>{amount_rub} ₽</b>\n"
-                "━━━━━━━━━━━━━━━━━━"
-            )
-
-            ikb = InlineKeyboardMarkup()
-            ikb.row(
-                InlineKeyboardButton(
-                    "🧾 Чек",
-                    callback_data=f"op_view_receipt:{int(order_id)}:{int(current_user_id)}",
-                ),
-                InlineKeyboardButton(
-                    "📥 Заявка",
-                    callback_data=f"operator_open_order:{int(current_user_id)}:{int(order_id)}",
-                ),
-            )
-            ikb.add(
-                InlineKeyboardButton(
-                    "✅ Готово — начать обмен",
-                    callback_data=f"ff_ready:{int(order_id)}:{int(current_user_id)}",
-                )
-            )
-            ikb.add(
-                InlineKeyboardButton(
-                    "✅ Завершить",
-                    callback_data=f"finish_order:{int(order_id)}:{int(current_user_id)}",
-                )
-            )
-
-            recipients: set[int] = set()
-
-            if op_user:
-                recipients.add(int(operator_id))
+            db_order_id = int(order.get("order_id") or order_id)
+            asset = _extract_asset_from_comment(str(order.get("comment") or ""))
 
             try:
-                all_users = await get_all_users()
+                amount = float(order.get("btc_amount") or 0)
             except Exception:
-                all_users = []
+                amount = 0.0
 
-            for user in all_users:
+            wallet_full = str(order.get("wallet") or "").strip() or "—"
+            amount_str = _format_amount_for_asset(asset, amount)
+
+            card = str(order.get("bank_card") or "—").strip() or "—"
+            bank = str(order.get("bank_name") or "—").strip() or "—"
+            try:
+                amount_rub = int(float(order.get("total_rub") or 0))
+            except Exception:
+                amount_rub = order.get("total_rub") or "—"
+
+            saved_user_link = str(order.get("user_link") or "").strip()
+            if saved_user_link:
+                mention = saved_user_link
+            elif order_user_id <= 0:
+                mention = f"web-guest / user_id {order_user_id}"
+            else:
+                with suppress(Exception):
+                    chat = await bot.get_chat(int(order_user_id))
+                    if getattr(chat, "username", None):
+                        mention = f"@{chat.username}"
+                    else:
+                        mention = html.escape(getattr(chat, "full_name", str(order_user_id)))
+                if "mention" not in locals():
+                    mention = f"WEB user_id {order_user_id}"
+
+            ikb_mastercard = InlineKeyboardMarkup()
+            ikb_mastercard.row(
+                InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
+                InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{order_user_id}:{db_order_id}"),
+            )
+            ikb_mastercard.add(
+                InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
+            )
+
+            ikb_admin = InlineKeyboardMarkup()
+            ikb_admin.row(
+                InlineKeyboardButton("🧾 Чек", callback_data=f"op_view_receipt:{db_order_id}:{order_user_id}"),
+                InlineKeyboardButton("✉️ SMS-чат", callback_data=f"operator_message:{order_user_id}:{db_order_id}"),
+            )
+            ikb_admin.add(
+                InlineKeyboardButton("✅ Готово — начать обмен", callback_data=f"ff_ready:{db_order_id}:{order_user_id}")
+            )
+            ikb_admin.add(
+                InlineKeyboardButton("✅ Завершить", callback_data=f"finish_order:{db_order_id}:{order_user_id}")
+            )
+
+            recipients = []
+
+            mastercard_owner_id = None
+            with suppress(Exception):
+                mastercard_owner_id = await _get_mastercard_owner_id_for_order(order)
+
+            mastercard_mention = "—"
+            if mastercard_owner_id:
+                with suppress(Exception):
+                    mc_chat = await bot.get_chat(int(mastercard_owner_id))
+                    if getattr(mc_chat, "username", None):
+                        mastercard_mention = f"@{mc_chat.username}"
+                    else:
+                        mastercard_mention = html.escape(getattr(mc_chat, "full_name", str(mastercard_owner_id)))
+
+                if mastercard_mention == "—":
+                    with suppress(Exception):
+                        mc_user = await get_user(int(mastercard_owner_id))
+                        raw_mc_username = str((mc_user or {}).get("username") or "").strip()
+                        if raw_mc_username:
+                            mastercard_mention = raw_mc_username if raw_mc_username.startswith("@") else f"@{raw_mc_username}"
+                        else:
+                            mastercard_mention = f"user_id {int(mastercard_owner_id)}"
+
+                recipients.append((int(mastercard_owner_id), ikb_mastercard, "mastercard"))
+
+            admin_ids = await _admin_ids()
+            for aid in admin_ids:
                 try:
-                    tid = int(user.get("telegram_id") or 0)
-                    role = str(user.get("role") or "").strip().lower()
+                    recipients.append((int(aid), ikb_admin, "admin"))
                 except Exception:
                     continue
 
-                if tid > 0 and role == "admin":
-                    recipients.add(tid)
+            unique_recipients = []
+            seen_recipient_ids = set()
+            for rid, kb, kind in recipients:
+                try:
+                    rid_int = int(rid)
+                except Exception:
+                    continue
+                if rid_int <= 0 or rid_int in seen_recipient_ids:
+                    continue
+                seen_recipient_ids.add(rid_int)
+                unique_recipients.append((rid_int, kb, kind))
 
-            for recipient_id in sorted(recipients):
+            if not unique_recipients:
+                return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+            if wallet_full != "—" and len(wallet_full) > 12:
+                wallet_for_mastercard = f"{wallet_full[:4]}…{wallet_full[-5:]}"
+            else:
+                wallet_for_mastercard = wallet_full
+
+            mastercard_text = (
+                "‼️Подтверждение оплаты‼️\n\n"
+                f"🆔 Заявка №{html.escape(str(db_order_id))}\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🪙 Монета: {html.escape(asset)}\n"
+                f"📦 К выдаче: {html.escape(amount_str)} {html.escape(asset)}\n"
+                f"🏷 Кошелёк: {html.escape(wallet_for_mastercard)}\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"💳 Карта/СБП: {html.escape(card)}\n"
+                f"🏦 Банк: {html.escape(bank)}\n"
+                f"💸 Сумма: {html.escape(str(amount_rub))} ₽"
+            )
+
+            admin_text = (
+                "‼️Подтверждение оплаты‼️\n\n"
+                f"👤 {mention}\n"
+                f"👤 ID: {html.escape(str(order_user_id))}\n"
+                f"🧑‍💼 Mastercard: {mastercard_mention}\n\n"
+                f"🆔 Заявка №{html.escape(str(db_order_id))}\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🪙 Монета: {html.escape(asset)}\n"
+                f"📦 К выдаче: {html.escape(amount_str)} {html.escape(asset)}\n"
+                f"🏷 Кошелёк: {html.escape(wallet_full)}\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"💳 Карта: {html.escape(card)}\n"
+                f"🏦 Банк: {html.escape(bank)}\n"
+                f"💸 Сумма: {html.escape(str(amount_rub))} ₽"
+            )
+
+            sent_any = False
+            for recipient_id, recipient_kb, kind in unique_recipients:
+                notification_text = mastercard_text if kind == "mastercard" else admin_text
                 try:
                     sent = await bot.send_message(
                         int(recipient_id),
-                        admin_text,
+                        notification_text,
                         parse_mode="HTML",
-                        reply_markup=ikb,
+                        reply_markup=recipient_kb,
+                        disable_web_page_preview=True,
                     )
-                    try:
+                    sent_any = True
+
+                    STATE.pending_ff_ready_buttons[(int(recipient_id), int(db_order_id))] = (
+                        sent.chat.id,
+                        sent.message_id,
+                    )
+
+                    await _remember_order_ui_message(int(db_order_id), sent.chat.id, sent.message_id)
+
+                    with suppress(Exception):
                         await save_operator_notification(
-                            order_id=int(order_id),
-                            user_id=int(current_user_id),
+                            order_id=int(db_order_id),
+                            user_id=int(order_user_id),
                             operator_id=int(recipient_id),
                             chat_id=int(sent.chat.id),
                             message_id=int(sent.message_id),
                         )
-                    except Exception:
-                        pass
                 except Exception:
                     continue
+
+            if sent_any:
+                with suppress(Exception):
+                    first_message_id = None
+                    for _key, msg_ref in STATE.pending_ff_ready_buttons.items():
+                        try:
+                            _recipient_id, key_order_id = _key
+                            _chat_id, msg_id = msg_ref
+                        except Exception:
+                            continue
+                        if int(key_order_id) == int(db_order_id):
+                            first_message_id = int(msg_id)
+                            break
+                    await mark_p2p_action_sent(
+                        int(db_order_id),
+                        action_name,
+                        message_id=first_message_id,
+                    )
         finally:
             await bot.session.close()
 
@@ -1522,6 +1880,131 @@ async def mark_order_paid(request: Request, order_id: int):
     except Exception:
         return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
+
+
+
+@router.post("/orders/{order_id}/receipt")
+async def upload_order_receipt(
+    request: Request,
+    order_id: int,
+    receipt: UploadFile = File(...),
+):
+    current_user_id = get_current_user_id(request)
+    guest_mode = is_guest_session(request)
+
+    if current_user_id is None:
+        return RedirectResponse(url="/orders/new", status_code=303)
+
+    try:
+        current_user_id_int = int(current_user_id)
+    except Exception:
+        return RedirectResponse(url="/orders/new", status_code=303)
+
+    if guest_mode:
+        allowed_order_ids = set(get_guest_order_ids(request))
+        if int(order_id) not in allowed_order_ids:
+            return RedirectResponse(url="/orders", status_code=303)
+
+    try:
+        from db.p2p import get_order_by_id
+
+        order = await get_order_by_id(int(order_id))
+        if not order or int(order.get("user_id") or 0) != int(current_user_id_int):
+            return RedirectResponse(url="/orders", status_code=303)
+
+        filename = str(getattr(receipt, "filename", "") or f"receipt_{int(order_id)}.pdf").strip()
+        content_type = str(getattr(receipt, "content_type", "") or "").lower()
+        is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
+        if not is_pdf:
+            return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+        file_bytes = await receipt.read()
+        if not file_bytes or len(file_bytes) > 15 * 1024 * 1024:
+            return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+        _ensure_web_support_tables_sync()
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO p2p_web_receipts (order_id, user_id, status, filename, uploaded_at)
+                VALUES (?, ?, 'uploaded', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    status = 'uploaded',
+                    filename = excluded.filename,
+                    uploaded_at = CURRENT_TIMESTAMP,
+                    rejected_at = NULL,
+                    reject_reason = NULL
+                """,
+                (int(order_id), int(current_user_id_int), filename),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        await _send_web_receipt_to_workers(order, file_bytes, filename)
+        return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+    except Exception:
+        return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+
+@router.post("/orders/{order_id}/chat")
+async def send_web_chat_message(
+    request: Request,
+    order_id: int,
+    message: str = Form(...),
+):
+    current_user_id = get_current_user_id(request)
+    guest_mode = is_guest_session(request)
+
+    if current_user_id is None:
+        return RedirectResponse(url="/orders/new", status_code=303)
+
+    try:
+        current_user_id_int = int(current_user_id)
+    except Exception:
+        return RedirectResponse(url="/orders/new", status_code=303)
+
+    if guest_mode:
+        allowed_order_ids = set(get_guest_order_ids(request))
+        if int(order_id) not in allowed_order_ids:
+            return RedirectResponse(url="/orders", status_code=303)
+
+    text = str(message or "").strip()
+    if not text:
+        return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+    text = text[:2000]
+
+    try:
+        from db.p2p import get_order_by_id
+
+        order = await get_order_by_id(int(order_id))
+        if not order or int(order.get("user_id") or 0) != int(current_user_id_int):
+            return RedirectResponse(url="/orders", status_code=303)
+
+        _ensure_web_support_tables_sync()
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO p2p_web_sms_messages (order_id, user_id, sender, worker_id, text)
+                VALUES (?, ?, 'user', NULL, ?)
+                """,
+                (int(order_id), int(current_user_id_int), text),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        await _notify_workers_about_web_user_message(order)
+        return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
+
+    except Exception:
+        return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(request: Request, order_id: int):

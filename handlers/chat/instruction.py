@@ -3646,6 +3646,94 @@ async def handle_check_from_user(message: types.Message) -> None:
     _track_receipt_order_msg(int(db_order_id), sent_ok.chat.id, sent_ok.message_id)
 
 
+
+
+async def _ensure_web_receipt_tables() -> None:
+    """Таблица запросов чека для WEB-заявок."""
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS p2p_web_receipts (
+            order_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            requested_by INTEGER,
+            status TEXT NOT NULL DEFAULT 'requested',
+            filename TEXT,
+            requested_at TEXT,
+            uploaded_at TEXT,
+            rejected_at TEXT,
+            reject_reason TEXT
+        )
+        """
+    )
+    await db.commit()
+
+
+async def _mark_web_receipt_requested(order_id: int, user_id: int, operator_id: int) -> None:
+    await _ensure_web_receipt_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO p2p_web_receipts (order_id, user_id, requested_by, status, requested_at)
+        VALUES (?, ?, ?, 'requested', CURRENT_TIMESTAMP)
+        ON CONFLICT(order_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            requested_by = excluded.requested_by,
+            status = CASE
+                WHEN p2p_web_receipts.status = 'uploaded' THEN p2p_web_receipts.status
+                ELSE 'requested'
+            END,
+            requested_at = CURRENT_TIMESTAMP,
+            rejected_at = NULL,
+            reject_reason = NULL
+        """,
+        (int(order_id), int(user_id), int(operator_id)),
+    )
+    await db.commit()
+
+
+async def _mark_web_receipt_rejected(order_id: int, user_id: int, operator_id: int, reason: str = "") -> None:
+    await _ensure_web_receipt_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO p2p_web_receipts (order_id, user_id, requested_by, status, requested_at, rejected_at, reject_reason)
+        VALUES (?, ?, ?, 'rejected', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(order_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            requested_by = excluded.requested_by,
+            status = 'rejected',
+            rejected_at = CURRENT_TIMESTAMP,
+            reject_reason = excluded.reject_reason
+        """,
+        (int(order_id), int(user_id), int(operator_id), str(reason or "Чек отклонён. Загрузите корректный PDF.")),
+    )
+    await db.commit()
+
+
+async def _is_web_receipt_order(order_id: int, user_id: int) -> bool:
+    """True для заявки, созданной через сайт, включая авторизованного WEB-пользователя."""
+    try:
+        if int(user_id) <= 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        from db.p2p import get_order_by_id
+        order = await get_order_by_id(int(order_id))
+    except Exception:
+        order = None
+
+    comment = str((order or {}).get("comment") or "").strip().upper()
+    payment_method = str((order or {}).get("payment_method") or "").strip().lower()
+
+    return (
+        comment.startswith("WEB")
+        or payment_method.startswith("vidrapay")
+        or payment_method.startswith("vidra-pay")
+    )
+
 async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
@@ -3658,6 +3746,20 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
         return
 
     operator_id = int(callback.from_user.id)
+
+    # WEB/WEB-GUEST: пользователь работает через сайт, поэтому ставим запрос чека
+    # в БД. Сайт увидит флаг при ближайшем автообновлении и покажет форму PDF.
+    if await _is_web_receipt_order(int(order_id), int(user_id)):
+        await _mark_web_receipt_requested(int(order_id), int(user_id), int(operator_id))
+        sent_operator_notice = await callback.bot.send_message(
+            operator_id,
+            f"🧾 Запрос чека по WEB-заявке №<b>{order_id}</b> отправлен на сайт.\n"
+            "Пользователь увидит форму загрузки PDF в своей заявке.",
+            parse_mode="HTML",
+        )
+        _track_receipt_order_msg(order_id, sent_operator_notice.chat.id, sent_operator_notice.message_id)
+        return
+
     with suppress(Exception):
         await callback.message.delete()
 
@@ -3687,7 +3789,6 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
     except Exception:
         with suppress(Exception):
             await callback.bot.send_message(operator_id, "⚠️ Пользователь недоступен: запрос чека не доставлен.")
-
 
 async def handle_op_attach_receipt(callback: types.CallbackQuery) -> None:
     await callback.answer()
@@ -3746,6 +3847,22 @@ async def handle_op_reject_receipt(callback: types.CallbackQuery) -> None:
         return
 
     operator_id = int(callback.from_user.id)
+
+    if await _is_web_receipt_order(int(order_id), int(user_id)):
+        await _mark_web_receipt_rejected(
+            int(order_id),
+            int(user_id),
+            int(operator_id),
+            "Чек отклонён. Пожалуйста, загрузите корректный PDF-файл.",
+        )
+        with suppress(Exception):
+            await callback.message.delete()
+        await callback.bot.send_message(
+            operator_id,
+            f"❌ Чек по WEB-заявке №<b>{order_id}</b> отклонён. Пользователь увидит это на сайте.",
+            parse_mode="HTML",
+        )
+        return
     with suppress(Exception):
         await callback.message.delete()
 

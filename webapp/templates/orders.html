@@ -333,6 +333,71 @@
             border-color: rgba(145, 165, 255, 0.24);
         }
 
+
+        .web-support-box {
+            border-radius: 18px;
+            padding: 18px;
+            margin-top: 20px;
+            border: 1px solid rgba(145, 165, 255, 0.24);
+            background: linear-gradient(135deg, #11151e, #171a24);
+            overflow-x: hidden;
+        }
+
+        .web-chat-list {
+            display: grid;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .web-chat-msg {
+            border: 1px solid rgba(216, 178, 106, 0.14);
+            border-radius: 14px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .web-chat-msg.from-user {
+            background: rgba(216, 178, 106, 0.10);
+        }
+
+        .web-chat-author {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 5px;
+            font-weight: 700;
+        }
+
+        .web-chat-text {
+            color: #fff2d3;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .file-input {
+            width: 100%;
+            min-height: 46px;
+            padding: 11px 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(216, 178, 106, 0.22);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            margin-top: 12px;
+        }
+
+        .textarea-input {
+            width: 100%;
+            min-height: 92px;
+            padding: 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(216, 178, 106, 0.22);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            resize: vertical;
+            margin-top: 12px;
+            font: inherit;
+        }
+
         .hint {
             margin-top: 10px;
             color: #e4d7bb;
@@ -774,6 +839,57 @@
                 </div>
                 {% endif %}
 
+
+                {% if ns.active_order.payment_confirmed_at or ns.active_order.web_receipt_requested or ns.active_order.web_chat_has_messages %}
+                <div class="web-support-box">
+                    <h3 style="margin-top:0;">Чек и SMS-чат</h3>
+
+                    {% if ns.active_order.web_receipt_requested %}
+                    <div class="hint" style="margin-top:0;">
+                        {% if ns.active_order.web_receipt_status == 'rejected' %}
+                            ❌ Чек отклонён. {{ ns.active_order.web_receipt_reject_reason or "Пожалуйста, загрузите корректный PDF-файл." }}
+                        {% else %}
+                            🧾 Оператор запросил чек об оплате. Загрузите файл строго в формате PDF.
+                        {% endif %}
+                    </div>
+                    <form method="post" action="/orders/{{ ns.active_order.order_id }}/receipt" enctype="multipart/form-data">
+                        <input class="file-input" type="file" name="receipt" accept="application/pdf,.pdf" required>
+                        <div class="action-row">
+                            <button type="submit" class="btn btn-success">Отправить чек PDF</button>
+                        </div>
+                    </form>
+                    {% elif ns.active_order.web_receipt_uploaded %}
+                    <div class="hint" style="margin-top:0;">
+                        ✅ Чек отправлен оператору и находится на проверке{% if ns.active_order.web_receipt_filename %}: {{ ns.active_order.web_receipt_filename }}{% endif %}.
+                    </div>
+                    {% else %}
+                    <div class="hint" style="margin-top:0;">
+                        Если оператор запросит чек, здесь появится форма загрузки PDF.
+                    </div>
+                    {% endif %}
+
+                    {% if ns.active_order.web_chat_has_messages %}
+                    <div class="web-chat-list">
+                        {% for msg in ns.active_order.web_chat_messages %}
+                        <div class="web-chat-msg {% if msg.sender == 'user' %}from-user{% endif %}">
+                            <div class="web-chat-author">
+                                {% if msg.sender == 'user' %}Вы{% else %}Оператор{% endif %}
+                            </div>
+                            <div class="web-chat-text">{{ msg.text }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    <form method="post" action="/orders/{{ ns.active_order.order_id }}/chat">
+                        <textarea class="textarea-input" name="message" maxlength="2000" placeholder="Напишите сообщение оператору" required></textarea>
+                        <div class="action-row">
+                            <button type="submit" class="btn btn-success">Отправить сообщение</button>
+                        </div>
+                    </form>
+                </div>
+                {% endif %}
+
                 {% if ns.active_order.show_tx_details %}
                 <div class="success-box">
                     <h3 style="margin-top:0;">Детали транзакции</h3>
@@ -984,6 +1100,11 @@
             };
 
             const refreshLiveOrders = async () => {
+                const active = document.activeElement;
+                if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
+                    return;
+                }
+
                 if (pollInFlight || document.hidden) {
                     return;
                 }

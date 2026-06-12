@@ -162,6 +162,22 @@ def _is_guest_order(rec: Optional[Dict[str, Any]], user_id: Optional[int]) -> bo
     comment = str((rec or {}).get("comment") or "").strip().upper()
     return comment.startswith("WEB")
 
+
+async def _is_web_order_by_id(order_id: Optional[int], user_id: Optional[int]) -> bool:
+    """True для WEB/WEB-GUEST заявок, даже если user_id положительный."""
+    if _is_guest_user_id(user_id):
+        return True
+
+    if order_id is None:
+        return False
+
+    try:
+        rec = await get_order_by_id(int(order_id))
+    except Exception:
+        rec = None
+
+    return _is_guest_order(rec, user_id)
+
 async def _build_order_user_mention(bot: Bot, user_id: int, rec: Optional[Dict[str, Any]] = None) -> str:
     if _is_guest_order(rec, user_id):
         return "WEB-гость"
@@ -866,7 +882,18 @@ async def close_sms_chat(callback: types.CallbackQuery) -> None:
         return
 
     closer_id = int(callback.from_user.id)
-    await _cleanup_sms_thread(callback.bot, user_id, closer_id, order_id)
+
+    if await _is_web_order_by_id(int(order_id), int(user_id)):
+        # WEB-чат закрываем только со стороны Telegram-карточек сотрудников.
+        for _worker_id, chat_id, message_id in await _load_web_sms_cards(int(order_id)):
+            with suppress(Exception):
+                await safe_delete(callback.bot, int(chat_id), int(message_id))
+        with suppress(Exception):
+            db = await get_db()
+            await db.execute("DELETE FROM p2p_web_sms_cards WHERE order_id = ?", (int(order_id),))
+            await db.commit()
+    else:
+        await _cleanup_sms_thread(callback.bot, user_id, closer_id, order_id)
 
     with suppress(Exception):
         await safe_delete(callback.bot, closer_id, callback.message.message_id)
@@ -2174,15 +2201,206 @@ async def user_support_sms_start(callback: types.CallbackQuery) -> None:
     pending_reply_to_operator[user_id] = (0, int(order_id), prompt.message_id)
 
 
+
+
+async def _ensure_web_sms_tables() -> None:
+    """Локальные таблицы WEB-SMS-чата по заявкам сайта."""
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS p2p_web_sms_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            sender TEXT NOT NULL,
+            worker_id INTEGER,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS p2p_web_sms_cards (
+            order_id INTEGER NOT NULL,
+            worker_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(order_id, worker_id)
+        )
+        """
+    )
+    await db.commit()
+
+
+async def _save_web_sms_message(
+    *,
+    order_id: int,
+    user_id: int,
+    sender: str,
+    text: str,
+    worker_id: Optional[int] = None,
+) -> None:
+    await _ensure_web_sms_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO p2p_web_sms_messages (order_id, user_id, sender, worker_id, text)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            int(order_id),
+            int(user_id),
+            str(sender or "user"),
+            int(worker_id) if worker_id else None,
+            str(text or "").strip() or "(пустое сообщение)",
+        ),
+    )
+    await db.commit()
+
+
+async def _load_web_sms_messages(order_id: int, limit: int = 14) -> List[Dict[str, Any]]:
+    await _ensure_web_sms_tables()
+    db = await get_db()
+    db.row_factory = None
+    cur = await db.execute(
+        """
+        SELECT sender, worker_id, text, created_at
+          FROM p2p_web_sms_messages
+         WHERE order_id = ?
+         ORDER BY id DESC
+         LIMIT ?
+        """,
+        (int(order_id), int(limit)),
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+    rows = list(reversed(rows))
+    return [
+        {
+            "sender": str(row[0] or ""),
+            "worker_id": int(row[1] or 0),
+            "text": str(row[2] or ""),
+            "created_at": str(row[3] or ""),
+        }
+        for row in rows
+    ]
+
+
+async def _remember_web_sms_card(order_id: int, worker_id: int, chat_id: int, message_id: int) -> None:
+    await _ensure_web_sms_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT OR REPLACE INTO p2p_web_sms_cards (order_id, worker_id, chat_id, message_id)
+        VALUES (?, ?, ?, ?)
+        """,
+        (int(order_id), int(worker_id), int(chat_id), int(message_id)),
+    )
+    await db.commit()
+
+
+async def _load_web_sms_cards(order_id: int) -> List[Tuple[int, int, int]]:
+    await _ensure_web_sms_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT worker_id, chat_id, message_id
+          FROM p2p_web_sms_cards
+         WHERE order_id = ?
+        """,
+        (int(order_id),),
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+    out: List[Tuple[int, int, int]] = []
+    for row in rows:
+        with suppress(Exception):
+            out.append((int(row[0]), int(row[1]), int(row[2])))
+    return out
+
+
+def _render_web_sms_card(order_id: int, messages: List[Dict[str, Any]]) -> str:
+    lines: List[str] = [
+        f"🧾 Заявка №{int(order_id)}",
+        "",
+        "WEB/SMS-чат поддержки по заявке",
+        "─────────",
+    ]
+
+    if not messages:
+        lines.append("Пока сообщений нет.")
+        return "\n".join(lines).rstrip()
+
+    for item in messages[-MAX_LINES:]:
+        sender = str(item.get("sender") or "").strip().lower()
+        text = _h(str(item.get("text") or "").strip()) or " "
+        header = "🙋 WEB-пользователь:" if sender == "user" else "👤 Оператор:"
+        lines.append("")
+        lines.append(header)
+        first = True
+        for line in text.splitlines() or [""]:
+            if first:
+                lines.append(f"— {line or ' '}")
+                first = False
+            else:
+                lines.append(f"   {line or ' '}")
+
+    return "\n".join(lines).rstrip()
+
+
+async def _send_or_refresh_web_sms_cards(
+    bot: Bot,
+    *,
+    order_id: int,
+    user_id: int,
+    fallback_worker_id: Optional[int] = None,
+) -> None:
+    """Показывает WEB/SMS-чат всем Admin и Mastercard-владельцу карты заявки."""
+    messages = await _load_web_sms_messages(int(order_id), limit=MAX_LINES)
+    card_text = _render_web_sms_card(int(order_id), messages)
+    worker_ids = await _get_sms_chat_worker_ids(int(order_id), fallback_worker_id)
+
+    # Добавляем всех, кому карточка уже отправлялась ранее.
+    for worker_id, _chat_id, _message_id in await _load_web_sms_cards(int(order_id)):
+        if worker_id not in worker_ids:
+            worker_ids.append(worker_id)
+
+    seen: set[int] = set()
+    for worker_id in worker_ids:
+        try:
+            wid = int(worker_id)
+        except Exception:
+            continue
+        if wid <= 0 or wid in seen:
+            continue
+        seen.add(wid)
+
+        old_refs = [item for item in await _load_web_sms_cards(int(order_id)) if int(item[0]) == wid]
+        for _old_worker, old_chat, old_msg in old_refs:
+            with suppress(Exception):
+                await safe_delete(bot, int(old_chat), int(old_msg))
+
+        try:
+            sent = await bot_send(
+                bot,
+                wid,
+                card_text,
+                parse_mode="HTML",
+                reply_markup=_kb_op_chat(int(user_id), int(order_id)),
+            )
+            await _remember_web_sms_card(int(order_id), wid, sent.chat.id, sent.message_id)
+        except Exception:
+            logger.exception("Failed to send WEB SMS card order_id=%s worker_id=%s", order_id, wid)
+
 async def operator_message(callback: types.CallbackQuery) -> None:
     """
     Запускает SMS-чат по конкретной заявке.
 
-    Важно:
-    - при нажатии на «SMS-чат» пустая карточка чата НЕ создаётся;
-    - сначала сотрудник вводит первое сообщение;
-    - после ввода создаётся общий SMS-чат по заявке уже с этим сообщением;
-    - чат видят все Admin и Mastercard-владелец карты заявки.
+    Для обычной Telegram-заявки работает прежний сценарий.
+    Для WEB/WEB-GUEST заявки пользователь отвечает через сайт, поэтому
+    сообщение сотрудника сохраняется в WEB-чат и показывается на странице заявки.
     """
     await callback.answer()
     operator_id = int(callback.from_user.id)
@@ -2194,14 +2412,6 @@ async def operator_message(callback: types.CallbackQuery) -> None:
         await bot_send(callback.bot, operator_id, "⚠️ Не удалось открыть SMS-чат: неверные данные кнопки.")
         return
 
-    if user_id <= 0:
-        await bot_send(
-            callback.bot,
-            operator_id,
-            "⚠️ SMS-чат недоступен: у этой WEB-заявки нет Telegram-пользователя.",
-        )
-        return
-
     order_id: Optional[int] = None
     if len(parts) >= 3:
         try:
@@ -2209,7 +2419,13 @@ async def operator_message(callback: types.CallbackQuery) -> None:
         except Exception:
             order_id = None
 
-    if order_id is None:
+    rec: Optional[Dict[str, Any]] = None
+    if order_id is not None:
+        try:
+            rec = await get_order_by_id(int(order_id))
+        except Exception:
+            rec = None
+    else:
         rec = await get_pending_order(user_id)
         order_id = int(rec["order_id"]) if rec and rec.get("order_id") else None
 
@@ -2217,8 +2433,18 @@ async def operator_message(callback: types.CallbackQuery) -> None:
         await bot_send(callback.bot, operator_id, "⚠️ Не удалось открыть SMS-чат: заявка не найдена.")
         return
 
-    # Не удаляем и не меняем основное сообщение подтверждения оплаты.
-    # Оно должно остаться в рабочем чате.
+    is_web_order = _is_guest_order(rec, user_id)
+
+    if is_web_order:
+        prompt = await bot_send(
+            callback.bot,
+            operator_id,
+            f"✏️ Введите первое сообщение для WEB-пользователя по заявке №{int(order_id)}. "
+            "Оно появится на сайте в блоке чата:",
+        )
+        pending_operator_texts[operator_id] = (user_id, int(order_id), prompt.message_id)
+        return
+
     prompt = await bot_send(
         callback.bot,
         operator_id,
@@ -2259,14 +2485,29 @@ async def operator_message_input(message: types.Message) -> None:
         text = "(пустое сообщение)"
 
     try:
-        await _append_and_update(
-            message.bot,
-            int(user_id),
-            operator_id,
-            int(order_id),
-            role="op",
-            text=text,
-        )
+        if await _is_web_order_by_id(int(order_id), int(user_id)):
+            await _save_web_sms_message(
+                order_id=int(order_id),
+                user_id=int(user_id),
+                sender="op",
+                text=text,
+                worker_id=operator_id,
+            )
+            await _send_or_refresh_web_sms_cards(
+                message.bot,
+                order_id=int(order_id),
+                user_id=int(user_id),
+                fallback_worker_id=operator_id,
+            )
+        else:
+            await _append_and_update(
+                message.bot,
+                int(user_id),
+                operator_id,
+                int(order_id),
+                role="op",
+                text=text,
+            )
     except Exception:
         logger.exception(
             "Failed to append first SMS message order_id=%s user_id=%s operator_id=%s",
@@ -2328,7 +2569,31 @@ async def handle_reply_from_operator(message: types.Message) -> None:
         cap = getattr(message, "caption", None)
         text = _h((cap or "(см. вложение)").strip())
 
-    await _append_and_update(message.bot, user_id, operator_id, order_id, role="op", text=text)
+    if await _is_web_order_by_id(int(order_id), int(user_id)):
+        try:
+            await _save_web_sms_message(
+                order_id=int(order_id),
+                user_id=int(user_id),
+                sender="op",
+                text=text,
+                worker_id=int(operator_id),
+            )
+            await _send_or_refresh_web_sms_cards(
+                message.bot,
+                order_id=int(order_id),
+                user_id=int(user_id),
+                fallback_worker_id=int(operator_id),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to append WEB SMS reply order_id=%s user_id=%s operator_id=%s",
+                order_id,
+                user_id,
+                operator_id,
+            )
+            await bot_send(message.bot, operator_id, "⚠️ Не удалось отправить сообщение в WEB-чат.")
+    else:
+        await _append_and_update(message.bot, user_id, operator_id, order_id, role="op", text=text)
 
     try:
         await safe_delete(message.bot, operator_id, message.message_id)
