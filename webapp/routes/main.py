@@ -1887,7 +1887,6 @@ async def mark_order_paid(request: Request, order_id: int):
 async def upload_order_receipt(
     request: Request,
     order_id: int,
-    receipt: UploadFile = File(...),
 ):
     current_user_id = get_current_user_id(request)
     guest_mode = is_guest_session(request)
@@ -1911,6 +1910,28 @@ async def upload_order_receipt(
         order = await get_order_by_id(int(order_id))
         if not order or int(order.get("user_id") or 0) != int(current_user_id_int):
             return RedirectResponse(url="/orders", status_code=303)
+
+        # Читаем файл вручную из multipart-form.
+        # Это надёжнее, чем жёстко требовать поле с именем "receipt":
+        # если в шаблоне поле называется file / receipt_file / pdf, маршрут всё равно сработает.
+        form = await request.form()
+        receipt = None
+
+        for value in form.values():
+            if isinstance(value, UploadFile):
+                receipt = value
+                break
+
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, UploadFile):
+                        receipt = item
+                        break
+                if receipt is not None:
+                    break
+
+        if receipt is None:
+            return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
         filename = str(getattr(receipt, "filename", "") or f"receipt_{int(order_id)}.pdf").strip()
         content_type = str(getattr(receipt, "content_type", "") or "").lower()
@@ -1950,8 +1971,6 @@ async def upload_order_receipt(
     except Exception:
         return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
-
-@router.post("/orders/{order_id}/chat")
 async def send_web_chat_message(
     request: Request,
     order_id: int,

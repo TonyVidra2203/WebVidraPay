@@ -3747,10 +3747,16 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
 
     operator_id = int(callback.from_user.id)
 
-    # WEB/WEB-GUEST: пользователь работает через сайт, поэтому ставим запрос чека
-    # в БД. Сайт увидит флаг при ближайшем автообновлении и покажет форму PDF.
-    if await _is_web_receipt_order(int(order_id), int(user_id)):
+    is_web_receipt = await _is_web_receipt_order(int(order_id), int(user_id))
+
+    # WEB/WEB-GUEST: обязательно ставим флаг в БД, чтобы сайт показал форму загрузки PDF.
+    # Важно: если user_id положительный, не выходим сразу — дополнительно запускаем Telegram-сценарий,
+    # потому что WEB-заявка может принадлежать пользователю, которому бот может писать в личку.
+    if is_web_receipt:
         await _mark_web_receipt_requested(int(order_id), int(user_id), int(operator_id))
+
+    # Настоящий WEB-гость не имеет Telegram-чата, поэтому для него сценарий только через сайт.
+    if int(user_id) <= 0:
         sent_operator_notice = await callback.bot.send_message(
             operator_id,
             f"🧾 Запрос чека по WEB-заявке №<b>{order_id}</b> отправлен на сайт.\n"
@@ -3766,15 +3772,24 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
     STATE.pending_check_receipts[user_id] = operator_id
 
     mention = await _build_mention(callback.bot, user_id)
+
+    if is_web_receipt:
+        operator_text = (
+            f"🧾 Запрос чека по WEB-заявке №<b>{order_id}</b> отправлен пользователю {mention} в Telegram "
+            "и дополнительно включён на сайте."
+        )
+    else:
+        operator_text = f"🧾 Запрос чека отправлен пользователю {mention} по заявке №<b>{order_id}</b>."
+
     sent_operator_notice = await callback.bot.send_message(
         operator_id,
-        f"🧾 Запрос чека отправлен пользователю {mention} по заявке №<b>{order_id}</b>.",
+        operator_text,
         parse_mode="HTML",
     )
     _track_receipt_order_msg(order_id, sent_operator_notice.chat.id, sent_operator_notice.message_id)
 
     kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("📎 Прикрепить чек (PDF)", callback_data=f"op_attach_receipt:{operator_id}")
+        InlineKeyboardButton("📎 Прикрепить чек (PDF)", callback_data=f"op_attach_receipt:{operator_id}:{order_id}")
     )
 
     user_text = (
@@ -3788,7 +3803,8 @@ async def handle_op_view_receipt(callback: types.CallbackQuery) -> None:
         _track_receipt_order_msg(order_id, sent.chat.id, sent.message_id)
     except Exception:
         with suppress(Exception):
-            await callback.bot.send_message(operator_id, "⚠️ Пользователь недоступен: запрос чека не доставлен.")
+            await callback.bot.send_message(operator_id, "⚠️ Пользователь недоступен в Telegram: запрос чека включён только на сайте." if is_web_receipt else "⚠️ Пользователь недоступен: запрос чека не доставлен.")
+
 
 async def handle_op_attach_receipt(callback: types.CallbackQuery) -> None:
     await callback.answer()
@@ -3798,6 +3814,11 @@ async def handle_op_attach_receipt(callback: types.CallbackQuery) -> None:
         operator_id = int(parts[1])
     except Exception:
         operator_id = None
+
+    try:
+        order_id = int(parts[2]) if len(parts) > 2 else None
+    except Exception:
+        order_id = None
 
     user_id = int(callback.from_user.id)
     if operator_id:
@@ -3813,6 +3834,8 @@ async def handle_op_attach_receipt(callback: types.CallbackQuery) -> None:
         parse_mode="HTML",
     )
     _track_receipt_msg(user_id, sent.message_id)
+    if order_id is not None:
+        _track_receipt_order_msg(order_id, sent.chat.id, sent.message_id)
 
 
 async def handle_wrong_receipt_format(message: types.Message) -> None:
@@ -3836,8 +3859,10 @@ async def handle_wrong_receipt_format(message: types.Message) -> None:
     _track_receipt_msg(user_id, sent.message_id)
 
 
+
 async def handle_op_reject_receipt(callback: types.CallbackQuery) -> None:
     await callback.answer()
+
     parts = (callback.data or "").split(":")
     try:
         user_id = int(parts[1])
@@ -3847,28 +3872,27 @@ async def handle_op_reject_receipt(callback: types.CallbackQuery) -> None:
         return
 
     operator_id = int(callback.from_user.id)
+    is_web_receipt = await _is_web_receipt_order(int(order_id), int(user_id))
 
-    if await _is_web_receipt_order(int(order_id), int(user_id)):
-        await _mark_web_receipt_rejected(
-            int(order_id),
-            int(user_id),
-            int(operator_id),
-            "Чек отклонён. Пожалуйста, загрузите корректный PDF-файл.",
-        )
-        with suppress(Exception):
-            await callback.message.delete()
-        await callback.bot.send_message(
-            operator_id,
-            f"❌ Чек по WEB-заявке №<b>{order_id}</b> отклонён. Пользователь увидит это на сайте.",
-            parse_mode="HTML",
-        )
-        return
+    # Не отклоняем чек сразу.
+    # Сначала просим Admin/Mastercard написать причину, а уже после текста:
+    # - для Telegram/P2P отправляем пользователю уведомление и ждём новый PDF;
+    # - для WEB-заявки обновляем p2p_web_receipts, чтобы сайт снова показал форму загрузки.
     with suppress(Exception):
         await callback.message.delete()
 
-    prompt = await callback.bot.send_message(operator_id, "⚠️ Введите причину отказа чека:", parse_mode="HTML")
-    STATE.pending_reject_reasons[operator_id] = {"user_id": user_id, "order_id": order_id,
-                                                 "prompt_id": prompt.message_id}
+    prompt_text = (
+        f"⚠️ Введите причину отказа чека по заявке №<b>{order_id}</b>.\n\n"
+        "Этот текст будет показан пользователю."
+    )
+    prompt = await callback.bot.send_message(operator_id, prompt_text, parse_mode="HTML")
+
+    STATE.pending_reject_reasons[operator_id] = {
+        "user_id": int(user_id),
+        "order_id": int(order_id),
+        "prompt_id": int(prompt.message_id),
+        "is_web_receipt": bool(is_web_receipt),
+    }
 
 
 async def handle_op_reject_reason(message: types.Message) -> None:
@@ -3883,8 +3907,9 @@ async def handle_op_reject_reason(message: types.Message) -> None:
 
     info = STATE.pending_reject_reasons.pop(operator_id, {})
     user_id = int(info.get("user_id") or 0)
-    order_id = info.get("order_id")
+    order_id = int(info.get("order_id") or 0)
     prompt_id = info.get("prompt_id")
+    is_web_receipt = bool(info.get("is_web_receipt"))
 
     with suppress(Exception):
         await message.bot.delete_message(chat_id=operator_id, message_id=message.message_id)
@@ -3892,27 +3917,59 @@ async def handle_op_reject_reason(message: types.Message) -> None:
         with suppress(Exception):
             await message.bot.delete_message(chat_id=operator_id, message_id=int(prompt_id))
 
-    try:
-        sent_user = await message.bot.send_message(
-            user_id,
-            (
-                f"❌ <b>Чек не принят</b> по заявке №<b>{order_id}</b>.\n"
-                f"Причина: <i>{html_escape(reason)}</i>\n\n"
-                "Пожалуйста, загрузите <b>новый чек</b> строго в формате PDF "
-                "(скрепка → Файл → выберите PDF)."
-            ),
-            parse_mode="HTML",
+    if order_id > 0 and (is_web_receipt or await _is_web_receipt_order(order_id, user_id)):
+        try:
+            await _mark_web_receipt_rejected(order_id, user_id, operator_id, reason)
+        except Exception:
+            logger.exception(
+                "Failed to mark WEB receipt rejected order_id=%s user_id=%s",
+                order_id,
+                user_id,
+            )
+
+    sent_to_user = False
+
+    # Для Telegram-пользователя отправляем личное уведомление и снова ждём PDF.
+    # Для WEB-гостя user_id отрицательный — личного Telegram-чата нет, причина будет показана на сайте.
+    if user_id > 0:
+        try:
+            sent_user = await message.bot.send_message(
+                user_id,
+                (
+                    f"❌ <b>Чек не принят</b> по заявке №<b>{order_id}</b>.\n"
+                    f"Причина: <i>{html_escape(reason)}</i>\n\n"
+                    "Пожалуйста, загрузите <b>новый чек</b> строго в формате PDF "
+                    "(скрепка → Файл → выберите PDF)."
+                ),
+                parse_mode="HTML",
+            )
+            _track_receipt_msg(user_id, sent_user.message_id)
+            STATE.pending_check_receipts[user_id] = operator_id
+            sent_to_user = True
+        except Exception:
+            logger.exception(
+                "Failed to send receipt rejection to user_id=%s order_id=%s",
+                user_id,
+                order_id,
+            )
+
+    if user_id <= 0:
+        note_text = (
+            f"❌ Чек по WEB-заявке №<b>{order_id}</b> отклонён.\n"
+            "Причина сохранена на сайте, пользователь увидит её и сможет загрузить новый PDF."
         )
-        _track_receipt_msg(user_id, sent_user.message_id)
-        STATE.pending_check_receipts[user_id] = operator_id
-    except Exception:
-        note = await message.answer("⚠️ Не удалось отправить уведомление пользователю.")
-        asyncio.create_task(_auto_delete(message.bot, message.chat.id, note.message_id, delay=6))
-        return
+    elif sent_to_user:
+        note_text = "Ожидаем новый PDF-чек..."
+    elif is_web_receipt:
+        note_text = (
+            f"❌ Чек по WEB-заявке №<b>{order_id}</b> отклонён.\n"
+            "Причина сохранена на сайте, но отправить сообщение пользователю в Telegram не удалось."
+        )
+    else:
+        note_text = "⚠️ Не удалось отправить уведомление пользователю."
 
-    note = await message.answer("Ожидаем новый PDF-чек...", parse_mode="HTML")
-    asyncio.create_task(_auto_delete(message.bot, message.chat.id, note.message_id, delay=6))
-
+    note = await message.answer(note_text, parse_mode="HTML")
+    asyncio.create_task(_auto_delete(message.bot, message.chat.id, note.message_id, delay=8))
 
 def register_instruction_handlers(dp: Dispatcher) -> None:
     dp.register_callback_query_handler(
@@ -3942,6 +3999,11 @@ def register_instruction_handlers(dp: Dispatcher) -> None:
         state="*",
     )
     dp.register_callback_query_handler(
+        handle_op_attach_receipt,
+        lambda c: (c.data or "").startswith("op_attach_receipt:"),
+        state="*",
+    )
+    dp.register_callback_query_handler(
         handle_exchange_ui_locked,
         lambda c: (c.data or "").startswith("exchange_ui_locked:"),
         state="*",
@@ -3965,6 +4027,12 @@ def register_instruction_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(
         handle_check_from_user,
         content_types=ContentType.DOCUMENT,
+        state="*",
+    )
+    dp.register_message_handler(
+        handle_wrong_receipt_format,
+        lambda message: int(message.from_user.id) in STATE.pending_check_receipts,
+        content_types=ContentType.ANY,
         state="*",
     )
     dp.register_message_handler(
