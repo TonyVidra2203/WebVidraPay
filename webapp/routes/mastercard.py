@@ -71,6 +71,24 @@ def _fmt_compact_money(value: Any) -> str:
     return f"{amount:,.0f}".replace(",", " ")
 
 
+def _fmt_tile_limit_money(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+
+    if amount <= 0:
+        return "0"
+
+    if amount >= 1000:
+        short = amount / 1000.0
+        if abs(short - round(short)) < 0.01:
+            return f"{int(round(short))}к"
+        return f"{short:.1f}".replace(".", ",") + "к"
+
+    return f"{amount:,.0f}".replace(",", " ")
+
+
 def _parse_date(value: Any) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
@@ -247,7 +265,143 @@ async def _ensure_mastercard_web_tables() -> None:
         )
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_owner_card_visibility (
+            owner_id INTEGER PRIMARY KEY,
+            cards_enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_salary_withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            comment TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     await db.commit()
+
+
+async def _get_mastercard_owner_cards_enabled(owner_id: int) -> bool:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT cards_enabled
+          FROM mastercard_owner_card_visibility
+         WHERE owner_id = ?
+         LIMIT 1
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+
+    if not row:
+        return True
+
+    return bool(int(row[0] or 0))
+
+
+async def _set_mastercard_owner_cards_enabled(owner_id: int, enabled: bool) -> None:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO mastercard_owner_card_visibility(owner_id, cards_enabled, updated_at)
+        VALUES(?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(owner_id) DO UPDATE SET
+            cards_enabled = excluded.cards_enabled,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (int(owner_id), 1 if enabled else 0),
+    )
+    await db.commit()
+
+
+async def _toggle_mastercard_owner_cards_enabled(owner_id: int) -> bool:
+    current = await _get_mastercard_owner_cards_enabled(int(owner_id))
+    new_value = not current
+    await _set_mastercard_owner_cards_enabled(int(owner_id), new_value)
+    return new_value
+
+
+
+async def _sum_salary_withdrawals(owner_id: int) -> float:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0)
+          FROM mastercard_salary_withdrawals
+         WHERE owner_id = ?
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return float(row[0] or 0.0) if row else 0.0
+
+
+async def _record_salary_withdrawal(owner_id: int, admin_id: int, amount: float, comment: str = "") -> None:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO mastercard_salary_withdrawals(owner_id, admin_id, amount, comment, created_at)
+        VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (int(owner_id), int(admin_id), float(amount or 0.0), str(comment or "")),
+    )
+    await db.commit()
+
+
+async def _count_salary_withdrawal_logs(owner_id: int) -> int:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT COUNT(*)
+          FROM mastercard_salary_withdrawals
+         WHERE owner_id = ?
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return int(row[0] or 0) if row else 0
+
+
+async def _load_salary_withdrawal_logs(owner_id: int, limit: int = 5, offset: int = 0) -> list[dict[str, Any]]:
+    await _ensure_mastercard_web_tables()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT amount, comment, created_at
+          FROM mastercard_salary_withdrawals
+         WHERE owner_id = ?
+      ORDER BY id DESC
+         LIMIT ? OFFSET ?
+        """,
+        (int(owner_id), int(limit), max(int(offset), 0)),
+    )
+    rows = await cur.fetchall() or []
+    await cur.close()
+    return [
+        {
+            "amount": float(row[0] or 0.0),
+            "comment": str(row[1] or ""),
+            "created_at": row[2] or "",
+        }
+        for row in rows
+    ]
 
 
 async def _ensure_withdrawals_table() -> None:
@@ -416,6 +570,32 @@ def _limit_state_for_card(card: dict[str, Any]) -> tuple[bool, str, str]:
             return True, f"Пауза после перевода: {pause_minutes} мин.", unlock_at.strftime("%d.%m %H:%M")
 
     return False, "", ""
+
+
+def _limit_unlock_iso_for_card(card: dict[str, Any]) -> str:
+    """Возвращает ISO-время окончания текущей блокировки карты для таймера в плитке."""
+    now = datetime.now(NSK_TZ)
+    next_midnight = datetime(now.year, now.month, now.day, tzinfo=NSK_TZ) + timedelta(days=1)
+
+    today_count = int(card.get("_today_count") or 0)
+    today_sum = float(card.get("_today_sum") or 0.0)
+    transfer_limit = int(card.get("daily_transfer_limit") or 0)
+    daily_limit = float(card.get("daily_limit_rub") or 0.0)
+
+    if transfer_limit > 0 and today_count >= transfer_limit:
+        return next_midnight.isoformat()
+
+    if daily_limit > 0 and today_sum >= daily_limit:
+        return next_midnight.isoformat()
+
+    last_done = card.get("_last_completed_nsk")
+    pause_minutes = int(card.get("transfer_pause_minutes") or 0)
+    if pause_minutes > 0 and isinstance(last_done, datetime):
+        unlock_at = last_done + timedelta(minutes=pause_minutes)
+        if unlock_at > now:
+            return unlock_at.isoformat()
+
+    return ""
 
 
 async def _get_card_today_limit_stats(card_id: int) -> dict[str, Any]:
@@ -1008,8 +1188,8 @@ async def _render_access_denied() -> HTMLResponse:
     html.is-android .slide-action{{min-height:44px!important}}
     html.is-android .slide-balance{{display:flex!important;align-items:flex-end!important;justify-content:space-between!important;gap:10px!important}}
     html.is-android .cards-carousel{{grid-auto-columns:92%!important}}
-    html.is-android .cards-grid{{grid-template-columns:1fr!important}}
-    html.is-android .tile{{min-height:0!important}}
+    html.is-android .cards-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}}
+    html.is-android .tile{{min-height:172px!important;padding:12px 11px 10px!important;border-radius:20px!important}}
     html.is-android .tile-row{{align-items:flex-start!important}}
     html.is-android .modal-backdrop{{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(0,0,0,.84)!important}}
     html.is-android .modal-box{{background:#14151b!important;border-color:rgba(255,255,255,.26)!important;max-height:90vh!important}}
@@ -1019,6 +1199,8 @@ async def _render_access_denied() -> HTMLResponse:
     @media (max-width: 430px){{
       html.is-android .top{{align-items:flex-start!important}}
       html.is-android .logo{{width:42px!important;height:42px!important;flex-basis:42px!important}}
+      html.is-android .top-toggle-btn{{width:42px!important;height:42px!important;border-radius:15px!important}}
+
       html.is-android .title{{font-size:20px!important}}
       html.is-android .subtitle{{font-size:11.5px!important}}
       html.is-android .top-balance{{min-width:122px!important}}
@@ -1055,7 +1237,7 @@ async def _render_access_denied() -> HTMLResponse:
     )
 
 
-def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
+def _page(title: str, body: str, header_amount: str = "", header_control_html: str = "") -> HTMLResponse:
     return HTMLResponse(
         f"""
 <!doctype html>
@@ -1097,6 +1279,12 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .shell{{width:100%;max-width:520px;margin:0 auto}}
     .top{{display:flex;align-items:center;gap:12px;padding:8px 2px 12px}}
     .logo{{width:48px;height:48px;flex:0 0 48px;border-radius:17px;display:grid;place-items:center;border:1px solid var(--line2);background:linear-gradient(135deg,rgba(214,179,95,.16),rgba(255,255,255,.035));color:var(--accent);font-weight:950;letter-spacing:-1px}}
+    .top-toggle-form{{margin:0;flex:0 0 auto}}
+    .top-toggle-btn{{width:48px;height:48px;border-radius:17px;border:1px solid rgba(117,224,167,.32);background:linear-gradient(135deg,rgba(117,224,167,.16),rgba(214,179,95,.10));color:var(--ok);display:grid;place-items:center;padding:0;box-shadow:0 14px 30px rgba(0,0,0,.24);cursor:pointer}}
+    .top-toggle-btn.off{{border-color:rgba(255,105,105,.34);background:linear-gradient(135deg,rgba(255,105,105,.17),rgba(255,255,255,.04));color:var(--danger)}}
+    .top-toggle-btn:active{{transform:scale(.985)}}
+    .top-toggle-icon{{font-size:21px;line-height:1;font-weight:1000}}
+
     .brand{{min-width:0;flex:1}}
     .title{{font-size:22px;line-height:1;font-weight:950;letter-spacing:-.35px}}
     .subtitle{{margin-top:5px;color:var(--muted);font-size:12.5px;line-height:1.25}}
@@ -1201,15 +1389,27 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .cards-grid{{display:none;grid-template-columns:1fr 1fr;gap:10px}}
     .cards-grid.show{{display:grid}}
     .cards-carousel.hide{{display:none}}
-    .tile{{min-width:0;position:relative;padding:13px;border-radius:22px;border:1px solid var(--line);background:linear-gradient(180deg,#111114,#0b0b0d);overflow:hidden;text-align:left;color:var(--text)}}
-    .tile::before{{content:"";position:absolute;inset:0;background:radial-gradient(circle at 16% 0%,rgba(214,179,95,.11),transparent 40%);pointer-events:none}}
-    .tile.off{{opacity:.62}}
-    .tile-top{{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}}
-    .tile-bank{{min-width:0;font-size:15px;line-height:1.15;font-weight:950;overflow-wrap:anywhere}}
-    .dot{{width:9px;height:9px;flex:0 0 9px;margin-top:3px;border-radius:999px;background:var(--muted2)}}
-    .dot.on{{background:var(--ok);box-shadow:0 0 0 4px rgba(117,224,167,.09)}}
-    .tile-lines{{position:relative;display:grid;gap:4px;margin-top:12px;color:var(--muted);font-size:12px;line-height:1.25;font-weight:750}}
-    .balance{{position:relative;margin-top:13px;color:var(--accent);font-size:16px;line-height:1;font-weight:950}}
+    .tile{{min-width:0;min-height:178px;position:relative;padding:12px 12px 10px;border-radius:22px;border:1px solid rgba(255,255,255,.16);background:linear-gradient(160deg,#171820 0%,#101116 48%,#08090b 100%);overflow:hidden;text-align:left;color:var(--text);display:flex;flex-direction:column;box-shadow:0 12px 28px rgba(0,0,0,.22)}}
+    .tile::before{{content:"";position:absolute;inset:0;background:radial-gradient(circle at 14% 0%,rgba(214,179,95,.16),transparent 38%),linear-gradient(135deg,rgba(255,255,255,.035),transparent 42%);pointer-events:none}}
+    .tile.off{{opacity:.64}}
+    .tile.blocked{{border-color:rgba(255,105,105,.25);background:linear-gradient(160deg,#1b171b 0%,#121116 52%,#08090b 100%)}}
+    .tile.blocked::before{{background:radial-gradient(circle at 14% 0%,rgba(255,105,105,.14),transparent 38%),radial-gradient(circle at 100% 100%,rgba(214,179,95,.08),transparent 34%)}}
+    .tile-top{{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px}}
+    .tile-bank{{min-width:0;font-size:15px;line-height:1.12;font-weight:1000;letter-spacing:-.15px;overflow-wrap:anywhere}}
+    .dot{{width:9px;height:9px;flex:0 0 9px;margin-top:4px;border-radius:999px;background:var(--muted2);box-shadow:0 0 0 4px rgba(255,255,255,.035)}}
+    .dot.on{{background:var(--ok);box-shadow:0 0 0 4px rgba(117,224,167,.10)}}
+    .tile-lines{{position:relative;display:grid;gap:6px;margin-top:10px;color:var(--muted);font-size:11.5px;line-height:1.18;font-weight:850}}
+    .tile-line{{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}}
+    .tile-line span{{color:var(--muted2);font-size:9.6px;font-weight:1000;text-transform:uppercase;letter-spacing:.25px;white-space:nowrap}}
+    .tile-line b{{min-width:0;color:rgba(246,243,234,.90);font-size:11.4px;font-weight:950;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}}
+    .tile-line.limit b,.tile-line.deals b{{color:var(--accent2);font-size:11.5px;letter-spacing:-.05px}}
+    .tile-divider{{position:relative;height:11px;margin:4px 0 0}}
+    .tile-divider::before{{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:linear-gradient(90deg,rgba(214,179,95,.72),rgba(255,255,255,.10),transparent)}}
+    .tile-divider::after{{content:"";position:absolute;left:0;top:50%;width:24px;height:3px;border-radius:999px;transform:translateY(-50%);background:linear-gradient(90deg,#e1c46f,rgba(214,179,95,.12))}}
+    .tile-bottom{{position:relative;margin-top:8px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:6px}}
+    .balance{{position:relative;min-width:0;color:var(--accent);font-size:15px;line-height:1;font-weight:1000;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    .tile-timer{{align-self:end;justify-self:end;display:inline-flex;align-items:center;gap:4px;min-height:24px;max-width:100%;padding:0 7px;border-radius:999px;border:1px solid rgba(255,105,105,.28);background:rgba(255,105,105,.10);color:#ffd7d7;font-size:9.5px;line-height:1;font-weight:1000;white-space:nowrap;box-shadow:0 0 0 3px rgba(255,105,105,.035)}}
+    .tile-timer b{{color:#fff;font-weight:1000;letter-spacing:.1px}}
     .empty{{padding:22px 16px;border-radius:24px;border:1px dashed var(--line2);background:rgba(214,179,95,.045);text-align:center}}
     .empty-title{{font-size:18px;font-weight:950}}
     .empty-text{{margin-top:8px;color:var(--muted);font-size:13px;line-height:1.45}}
@@ -1268,6 +1468,13 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     .admin-deposit-mini span{{font-size:13px;line-height:1}}
     .admin-deposit-mini b{{font-size:10px;line-height:1;text-transform:uppercase;letter-spacing:.22px;color:rgba(246,243,234,.58)}}
     .admin-deposit-mini:active{{transform:scale(.98)}}
+    .admin-salary-mini{{border-color:rgba(117,224,167,.24);background:rgba(117,224,167,.065);color:rgba(117,224,167,.92)}}
+    .admin-salary-mini b{{color:rgba(246,243,234,.62)}}
+    .salary-admin-panel{{margin-top:11px;padding:12px;border-radius:20px;border:1px solid rgba(117,224,167,.22);background:linear-gradient(135deg,rgba(117,224,167,.075),rgba(214,179,95,.045));display:grid;grid-template-columns:minmax(0,1fr) auto;gap:11px;align-items:center}}
+    .salary-admin-panel-title{{font-size:13px;font-weight:950;color:var(--text);line-height:1.2}}
+    .salary-admin-panel-text{{margin-top:4px;color:var(--muted);font-size:11.5px;line-height:1.35}}
+    .salary-admin-panel-btn{{min-height:38px;border:1px solid rgba(117,224,167,.28);border-radius:15px;background:rgba(117,224,167,.11);color:#d8ffe8;padding:0 13px;font-size:11.5px;font-weight:950;white-space:nowrap}}
+    .salary-admin-panel-btn:active{{transform:scale(.98)}}
     .admin-deposit-box{{max-width:390px}}
     .stats-only{{display:grid;gap:13px}}
     .stat-block{{padding:13px;border-radius:22px;border:1px solid rgba(255,255,255,.15);background:linear-gradient(180deg,#16161a,#0d0d10)}}
@@ -1303,6 +1510,8 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       .page{{min-height:100vh;min-height:100dvh;padding:10px 10px 22px}}
       .top{{align-items:flex-start;gap:10px;padding:8px 1px 12px}}
       .logo{{width:44px;height:44px;flex-basis:44px;border-radius:15px}}
+      .top-toggle-btn{{width:44px;height:44px;border-radius:15px}}
+
       .title{{font-size:21px}}
       .subtitle{{font-size:12px}}
       .top-balance{{min-width:122px;padding-top:1px}}
@@ -1390,8 +1599,8 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
     html.is-android .slide-action{{min-height:44px!important}}
     html.is-android .slide-balance{{display:flex!important;align-items:flex-end!important;justify-content:space-between!important;gap:10px!important}}
     html.is-android .cards-carousel{{grid-auto-columns:92%!important}}
-    html.is-android .cards-grid{{grid-template-columns:1fr!important}}
-    html.is-android .tile{{min-height:0!important}}
+    html.is-android .cards-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}}
+    html.is-android .tile{{min-height:172px!important;padding:12px 11px 10px!important;border-radius:20px!important}}
     html.is-android .tile-row{{align-items:flex-start!important}}
     html.is-android .modal-backdrop{{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(0,0,0,.84)!important}}
     html.is-android .modal-box{{background:#14151b!important;border-color:rgba(255,255,255,.26)!important;max-height:90vh!important}}
@@ -1435,7 +1644,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
   <main class="page">
     <div class="shell">
       <header class="top">
-        <div class="logo">MC</div>
+        {header_control_html or '<div class="logo">MC</div>'}
         <div class="brand">
           <div class="title">MasterCard</div>
           <div class="subtitle">Управление картами</div>
@@ -1485,6 +1694,26 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       document.querySelectorAll('[data-open-slide]').forEach(function(tile) {{
         tile.addEventListener('click', function() {{ setCardsView('swipe', tile.getAttribute('data-open-slide') || ''); }});
       }});
+      function updateTileCountdowns() {{
+        var now = Date.now();
+        document.querySelectorAll('[data-countdown-until]').forEach(function(el) {{
+          var raw = el.getAttribute('data-countdown-until') || '';
+          var target = Date.parse(raw);
+          var value = el.querySelector('b');
+          if (!target || !value) return;
+          var diff = Math.max(0, target - now);
+          var total = Math.floor(diff / 1000);
+          var h = Math.floor(total / 3600);
+          var m = Math.floor((total % 3600) / 60);
+          var sec = total % 60;
+          var text = h > 0
+            ? String(h) + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0')
+            : String(m) + ':' + String(sec).padStart(2, '0');
+          value.textContent = text;
+        }});
+      }}
+      updateTileCountdowns();
+      setInterval(updateTileCountdowns, 1000);
       document.querySelectorAll('[data-toggle-requisites]').forEach(function(btn) {{
         btn.addEventListener('click', function(event) {{
           event.preventDefault();
@@ -1533,6 +1762,7 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       var withdrawModal = document.getElementById('withdrawModal');
       var withdrawModalTitle = document.getElementById('withdrawModalTitle');
       var depositModal = document.getElementById('depositModal');
+      var salaryModal = document.getElementById('salaryModal');
       function openDepositModal() {{
         if (!depositModal) return;
         depositModal.classList.add('open');
@@ -1543,6 +1773,18 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       function closeDepositModal() {{
         if (!depositModal) return;
         depositModal.classList.remove('open');
+        document.body.style.overflow = '';
+      }}
+      function openSalaryModal() {{
+        if (!salaryModal) return;
+        salaryModal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+        var input = salaryModal.querySelector('input[name="amount"]');
+        if (input) setTimeout(function() {{ input.focus(); input.select(); }}, 120);
+      }}
+      function closeSalaryModal() {{
+        if (!salaryModal) return;
+        salaryModal.classList.remove('open');
         document.body.style.overflow = '';
       }}
       function openEditModal(cardId, title) {{
@@ -1603,10 +1845,13 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       document.querySelectorAll('[data-withdraw-close]').forEach(function(btn) {{ btn.addEventListener('click', closeWithdrawModal); }});
       document.querySelectorAll('[data-deposit-open]').forEach(function(btn) {{ btn.addEventListener('click', openDepositModal); }});
       document.querySelectorAll('[data-deposit-close]').forEach(function(btn) {{ btn.addEventListener('click', closeDepositModal); }});
+      document.querySelectorAll('[data-salary-open]').forEach(function(btn) {{ btn.addEventListener('click', openSalaryModal); }});
+      document.querySelectorAll('[data-salary-close]').forEach(function(btn) {{ btn.addEventListener('click', closeSalaryModal); }});
       if (modal) modal.addEventListener('click', function(event) {{ if (event.target === modal) closeEditModal(); }});
       if (withdrawModal) withdrawModal.addEventListener('click', function(event) {{ if (event.target === withdrawModal) closeWithdrawModal(); }});
       if (depositModal) depositModal.addEventListener('click', function(event) {{ if (event.target === depositModal) closeDepositModal(); }});
-      document.addEventListener('keydown', function(event) {{ if (event.key === 'Escape') {{ closeEditModal(); closeWithdrawModal(); closeDepositModal(); }} }});
+      if (salaryModal) salaryModal.addEventListener('click', function(event) {{ if (event.target === salaryModal) closeSalaryModal(); }});
+      document.addEventListener('keydown', function(event) {{ if (event.key === 'Escape') {{ closeEditModal(); closeWithdrawModal(); closeDepositModal(); closeSalaryModal(); }} }});
       function onlyDigits(value) {{ return String(value || '').replace(/\\D/g, ''); }}
       function formatCardInput(input) {{
         var digits = onlyDigits(input.value).slice(0, 16);
@@ -1636,8 +1881,11 @@ def _page(title: str, body: str, header_amount: str = "") -> HTMLResponse:
       if (hash.indexOf('card-') === 0) {{
         showTab('cards');
         setCardsView('swipe', hash.replace('card-', ''));
-      }} else if (['cards','add','orders','stats'].indexOf(hash) >= 0) {{
-        showTab(hash);
+      }} else {{
+        if (['cards','add','orders','stats'].indexOf(hash) >= 0) {{
+          showTab(hash);
+        }}
+        setCardsView('grid');
       }}
     }})();
   </script>
@@ -1692,6 +1940,20 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
     cards = await get_cards_by_owner(user_id)
     completed_orders = await get_completed_orders_by_master(user_id)
     mastercard_deposit = float(await get_user_mastercard_deposit(int(user_id)) or 0.0)
+
+    cards_enabled = await _get_mastercard_owner_cards_enabled(int(user_id))
+    top_cards_toggle_html = f"""
+        <form class="top-toggle-form" method="post" action="/mastercard/cards/visibility/toggle">
+          <input type="hidden" name="user_id" value="{int(user_id)}">
+          {admin_hidden_input}
+          <button class="top-toggle-btn {'on' if cards_enabled else 'off'}"
+                  type="submit"
+                  title="{'Карты включены для обменов' if cards_enabled else 'Карты выключены для обменов'}"
+                  aria-label="{'Выключить карты для обменов' if cards_enabled else 'Включить карты для обменов'}">
+            <span class="top-toggle-icon">{'⏻' if cards_enabled else '○'}</span>
+          </button>
+        </form>
+    """
 
     owned_card_ids = {
         int(card.get("card_id") or 0)
@@ -1793,6 +2055,8 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
         enriched_cards.append(card)
 
     inactive_count = max(len(enriched_cards) - active_count, 0)
+    salary_withdrawn_total = await _sum_salary_withdrawals(int(user_id))
+    available_profit = max(float(total_profit or 0.0) - float(salary_withdrawn_total or 0.0), 0.0)
     deposit_left = max(float(mastercard_deposit or 0.0) - float(total_balance or 0.0), 0.0)
     deposit_progress_text = (
         f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}"
@@ -1809,12 +2073,30 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
     deposit_panel_html = ""
     admin_deposit_button_html = ""
     admin_deposit_modal_html = ""
+    admin_salary_button_html = ""
+    admin_salary_stats_panel_html = ""
+    admin_salary_modal_html = ""
     if admin_mode and admin_id:
         admin_deposit_button_html = f"""
           <button class="admin-deposit-mini" type="button" data-deposit-open="1" aria-label="Установить депозит Mastercard">
             <span>₽</span>
             <b>депозит</b>
           </button>
+        """
+        admin_salary_button_html = f"""
+          <button class="admin-deposit-mini admin-salary-mini" type="button" data-salary-open="1" aria-label="Вывести зарплату Mastercard">
+            <span>↘</span>
+            <b>вывод</b>
+          </button>
+        """
+        admin_salary_stats_panel_html = f"""
+          <div class="salary-admin-panel">
+            <div>
+              <div class="salary-admin-panel-title">Вывод зарплаты Mastercard</div>
+              <div class="salary-admin-panel-text">Доступно к выводу: <b>{_fmt_money(available_profit)}</b>. Операция попадёт в историю ниже.</div>
+            </div>
+            <button class="salary-admin-panel-btn" type="button" data-salary-open="1">Вывести</button>
+          </div>
         """
         admin_deposit_modal_html = f"""
           <div class="modal-backdrop" id="depositModal" aria-hidden="true">
@@ -1838,6 +2120,34 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                   </div>
                   <div class="form-actions" style="margin-top:11px">
                     <button class="btn" type="submit">Сохранить</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        """
+        admin_salary_modal_html = f"""
+          <div class="modal-backdrop" id="salaryModal" aria-hidden="true">
+            <div class="modal-box admin-deposit-box" role="dialog" aria-modal="true">
+              <div class="modal-head">
+                <div class="modal-title">Вывод зарплаты</div>
+                <button class="modal-close" type="button" data-salary-close="1" aria-label="Закрыть">×</button>
+              </div>
+              <div class="modal-content">
+                <form class="form" method="post" action="/mastercard/salary/withdraw">
+                  <input type="hidden" name="user_id" value="{int(user_id)}">
+                  <input type="hidden" name="admin_id" value="{int(admin_id)}">
+                  <div class="field-box">
+                    <div class="box-title">Админ</div>
+                    <label>Сумма вывода, руб.<input name="amount" inputmode="decimal" placeholder="0" required></label>
+                    <div class="help">Сумма вычтется из накопленной прибыли Mastercard. Карты, лимиты и резерв не меняются.</div>
+                  </div>
+                  <div class="quick-stats" style="margin-bottom:0">
+                    <div class="quick-stat"><div class="quick-label">Накоплено</div><div class="quick-value">{_fmt_money(total_profit)}</div></div>
+                    <div class="quick-stat"><div class="quick-label">Доступно</div><div class="quick-value">{_fmt_money(available_profit)}</div></div>
+                  </div>
+                  <div class="form-actions" style="margin-top:11px">
+                    <button class="btn" type="submit">Вывести</button>
                   </div>
                 </form>
               </div>
@@ -1874,6 +2184,20 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
             limit_warning_html = (
                 f'<div class="limit-warning">Лимит: {limit_reason}. Можно включить после {limit_until}.</div>'
                 if limit_blocked else ""
+            )
+            min_amount = float(card.get("min_amount_rub") or 0.0)
+            max_amount = float(card.get("max_amount_rub") or 0.0)
+            min_amount_text = _fmt_tile_limit_money(min_amount) if min_amount > 0 else "0"
+            max_amount_text = _fmt_tile_limit_money(max_amount) if max_amount > 0 else "∞"
+            amount_limits_text = f"{min_amount_text} – {max_amount_text}"
+            unlock_iso = _limit_unlock_iso_for_card(card) if limit_blocked else ""
+            tile_timer_html = (
+                f'<div class="tile-timer" data-countdown-until="{_esc(unlock_iso)}"><span>⏱</span><b>--:--</b></div>'
+                if unlock_iso else ""
+            )
+            tile_filter_html = (
+                f'<div class="tile-filter">{limit_reason}</div>'
+                if limit_blocked and limit_reason else ""
             )
 
             carousel_html += f"""
@@ -1919,16 +2243,22 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
             """
 
             tiles_html += f"""
-              <button class="tile {'off' if not is_active else ''}" type="button" data-open-slide="{card_id}">
+              <button class="tile {'off' if not is_active else ''} {'blocked' if limit_blocked else ''}" type="button" data-open-slide="{card_id}">
                 <div class="tile-top">
                   <div class="tile-bank">{bank_name}</div>
                   <div class="dot {'on' if is_active else ''}" title="{'Активна' if is_active else 'Выключена'}"></div>
                 </div>
                 <div class="tile-lines">
-                  <div>Карта: •••• {card_last4}</div>
-                  <div>СБП: •••• {sbp_last4}</div>
+                  <div class="tile-line"><span>Карта</span><b>•••• {card_last4}</b></div>
+                  <div class="tile-line"><span>СБП</span><b>•••• {sbp_last4}</b></div>
+                  <div class="tile-line limit"><span>Лимит</span><b>{amount_limits_text}</b></div>
+                  <div class="tile-line deals"><span>Заявки</span><b>{transfers_text}</b></div>
+                  <div class="tile-divider" aria-hidden="true"></div>
                 </div>
-                <div class="balance">{balance}</div>
+                <div class="tile-bottom">
+                  <div class="balance">{balance}</div>
+                  {tile_timer_html}
+                </div>
               </button>
             """
 
@@ -2159,6 +2489,65 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
           </div>
         """
 
+    try:
+        salary_page = max(int(request.query_params.get("salary_page") or 1), 1)
+    except Exception:
+        salary_page = 1
+
+    salary_log_total = await _count_salary_withdrawal_logs(int(user_id))
+    salary_pages = max((salary_log_total + logs_per_page - 1) // logs_per_page, 1)
+    if salary_page > salary_pages:
+        salary_page = salary_pages
+
+    salary_offset = (salary_page - 1) * logs_per_page
+    salary_logs = await _load_salary_withdrawal_logs(
+        int(user_id),
+        limit=logs_per_page,
+        offset=salary_offset,
+    )
+
+    salary_pagination_html = ""
+    if salary_log_total > logs_per_page:
+        prev_page = max(salary_page - 1, 1)
+        next_page = min(salary_page + 1, salary_pages)
+        prev_disabled = " style='opacity:.45;pointer-events:none'" if salary_page <= 1 else ""
+        next_disabled = " style='opacity:.45;pointer-events:none'" if salary_page >= salary_pages else ""
+        salary_pagination_html = f"""
+          <div class="log-pager">
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}{admin_url_part}&salary_page={prev_page}#stats"{prev_disabled}>← Назад</a>
+            <div class="log-pager-info">{salary_page} / {salary_pages}</div>
+            <a class="btn ghost" href="/mastercard?user_id={int(user_id)}{admin_url_part}&salary_page={next_page}#stats"{next_disabled}>Вперёд →</a>
+          </div>
+        """
+
+    if salary_logs:
+        salary_audit_html = ""
+        for item in salary_logs:
+            when = _fmt_date_short(item.get("created_at"))
+            amount = float(item.get("amount") or 0.0)
+            comment_text = _esc(item.get("comment") or "Вывод зарплаты Mastercard")
+            salary_audit_html += f"""
+              <div class="log-card" style="border-color:rgba(117,224,167,.20);background:rgba(117,224,167,.045)">
+                <div class="log-top">
+                  <div>
+                    <div class="log-name">Вывод зарплаты</div>
+                    <div class="log-text">{comment_text}</div>
+                  </div>
+                  <div class="log-time">{when}</div>
+                </div>
+                <div class="log-text">Админ зафиксировал выплату из накопленной прибыли Mastercard.</div>
+                <div class="log-diff">Сумма вывода: {_fmt_money(amount)}</div>
+              </div>
+            """
+        salary_audit_html += salary_pagination_html
+    else:
+        salary_audit_html = """
+          <div class="empty">
+            <div class="empty-title">Выводов зарплаты пока нет</div>
+            <div class="empty-text">Когда админ выведет зарплату, операция появится здесь.</div>
+          </div>
+        """
+
     body = f"""
       <section class="panel">
         <nav class="nav" aria-label="Разделы кабинета">
@@ -2174,8 +2563,8 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
             <div class="head-actions">
               {admin_deposit_button_html}
               <div class="view-switch" aria-label="Вид карт">
-                <button class="view-switch-btn active" type="button" data-view-mode="swipe">Свайп</button>
-                <button class="view-switch-btn" type="button" data-view-mode="grid">Плитка</button>
+                <button class="view-switch-btn" type="button" data-view-mode="swipe">Свайп</button>
+                <button class="view-switch-btn active" type="button" data-view-mode="grid">Плитка</button>
               </div>
             </div>
           </div>
@@ -2228,7 +2617,7 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
           </div>
           <div class="orders-mini-stats">
             <div class="orders-mini"><div class="orders-mini-label">Завершено</div><div class="orders-mini-value">{len(completed_orders)}</div></div>
-            <div class="orders-mini"><div class="orders-mini-label">Прибыль</div><div class="orders-mini-value">{_fmt_money(total_profit)}</div></div>
+            <div class="orders-mini"><div class="orders-mini-label">Прибыль</div><div class="orders-mini-value">{_fmt_money(available_profit)}</div></div>
           </div>
           <div class="orders-list">{order_rows_html}</div>
         </section>
@@ -2248,11 +2637,13 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                 <span class="stat-block-badge">общая</span>
               </div>
               <div class="stat-grid">
-                <div class="stat-card"><div class="stat-label">Прибыль</div><div class="stat-value">{_fmt_money(total_profit)}</div></div>
+                <div class="stat-card"><div class="stat-label">Прибыль доступна</div><div class="stat-value">{_fmt_money(available_profit)}</div></div>
+                <div class="stat-card"><div class="stat-label">Зарплата выведена</div><div class="stat-value">{_fmt_money(salary_withdrawn_total)}</div></div>
                 <div class="stat-card"><div class="stat-label">Сделки</div><div class="stat-value">{len(completed_orders)}</div></div>
                 <div class="stat-card"><div class="stat-label">Сумма заявок</div><div class="stat-value">{_fmt_money(total_completed_amount)}</div></div>
                 <div class="stat-card"><div class="stat-label">Средний чек</div><div class="stat-value">{_fmt_money(total_completed_amount / len(completed_orders) if completed_orders else 0)}</div></div>
               </div>
+              {admin_salary_stats_panel_html}
             </div>
 
             <div class="stat-block">
@@ -2289,6 +2680,9 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
                 <div class="log-diff">Текущий долг держателя перед резервом: {_fmt_money(max(reserve_debt, 0.0))}</div>
               </div>
 
+              <div class="log-title" style="margin-top:4px">История выводов зарплаты</div>
+              {salary_audit_html}
+
               <div class="log-title" style="margin-top:4px">История выводов в резерв</div>
               {audit_html}
             </div>
@@ -2316,11 +2710,109 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
       </div>
 
       {admin_deposit_modal_html}
+      {admin_salary_modal_html}
       </section>
     """
 
-    return _page("MasterCard", body, f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}")
+    return _page(
+        "MasterCard",
+        body,
+        f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}",
+        top_cards_toggle_html,
+    )
 
+
+
+@router.post("/salary/withdraw")
+async def mastercard_withdraw_salary(
+        user_id: int = Form(...),
+        admin_id: str = Form(""),
+        amount: str = Form(""),
+):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
+    if not await _is_mastercard_user(int(user_id)):
+        return await _render_access_denied()
+
+    if not admin_actor_id:
+        return await _render_access_denied()
+
+    try:
+        value = _to_float_or_none(amount)
+    except Exception:
+        return _alert_redirect(
+            int(user_id),
+            "Введите корректную сумму вывода зарплаты.",
+            "orders",
+            admin_id=admin_actor_id,
+        )
+
+    if not value or value <= 0:
+        return _alert_redirect(
+            int(user_id),
+            "Введите сумму вывода зарплаты больше нуля.",
+            "orders",
+            admin_id=admin_actor_id,
+        )
+
+    cards = await get_cards_by_owner(int(user_id))
+    owned_card_ids = {
+        int(card.get("card_id") or 0)
+        for card in cards
+        if int(card.get("card_id") or 0) > 0
+    }
+    completed_orders = await get_completed_orders_by_master(int(user_id))
+    if owned_card_ids:
+        completed_orders = [
+            order for order in completed_orders
+            if int(order.get("card_id") or 0) in owned_card_ids
+        ]
+    else:
+        completed_orders = []
+
+    total_profit = 0.0
+    for order in completed_orders:
+        try:
+            total_profit += float(order.get("total_rub") or 0.0) * 0.09
+        except Exception:
+            continue
+
+    salary_withdrawn_total = await _sum_salary_withdrawals(int(user_id))
+    available_profit = max(float(total_profit or 0.0) - float(salary_withdrawn_total or 0.0), 0.0)
+
+    if float(value) > available_profit + 0.01:
+        return _alert_redirect(
+            int(user_id),
+            f"Недостаточно накопленной прибыли. Доступно: {_fmt_money(available_profit)}, запрошено: {_fmt_money(value)}.",
+            "orders",
+            admin_id=admin_actor_id,
+        )
+
+    await _record_salary_withdrawal(
+        owner_id=int(user_id),
+        admin_id=int(admin_actor_id),
+        amount=float(value),
+        comment=f"До вывода было {_fmt_money(available_profit)}, после вывода стало {_fmt_money(available_profit - float(value))}.",
+    )
+
+    await _log_card_audit(
+        owner_id=int(user_id),
+        card_id=0,
+        action="salary_withdraw",
+        title="Вывод зарплаты Mastercard",
+        details=f"Админ вывел {_fmt_money(value)} из накопленной прибыли. Остаток: {_fmt_money(available_profit - float(value))}.",
+        amount=float(value),
+        diff=-float(value),
+    )
+
+    return _redirect(int(user_id), "stats", admin_id=int(admin_actor_id))
 
 
 @router.post("/deposit/update")
@@ -2404,6 +2896,27 @@ async def mastercard_reset_card_data(
 
     await _reset_mastercard_card_data(int(user_id))
     return _redirect(int(user_id), "stats", admin_id=int(admin_actor_id))
+
+
+@router.post("/cards/visibility/toggle")
+async def mastercard_toggle_cards_visibility(
+        user_id: int = Form(...),
+        admin_id: str = Form(""),
+):
+    admin_actor_id = None
+    try:
+        parsed_admin_id = int(admin_id) if str(admin_id or "").strip() else None
+    except Exception:
+        parsed_admin_id = None
+
+    if parsed_admin_id and await _is_admin_user(parsed_admin_id):
+        admin_actor_id = parsed_admin_id
+
+    if not await _is_mastercard_user(int(user_id)):
+        return await _render_access_denied()
+
+    await _toggle_mastercard_owner_cards_enabled(int(user_id))
+    return _redirect(int(user_id), "cards", admin_id=admin_actor_id)
 
 
 @router.post("/card/add")

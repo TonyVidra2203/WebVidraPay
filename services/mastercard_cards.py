@@ -256,6 +256,47 @@ async def mastercard_owner_can_accept_amount(owner_id: int, amount_rub: float) -
     return bool(state.get("can_accept"))
 
 
+async def _ensure_mastercard_owner_card_visibility_table() -> None:
+    db = await get_db()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_owner_card_visibility (
+            owner_id INTEGER PRIMARY KEY,
+            cards_enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.commit()
+
+
+async def mastercard_owner_cards_are_enabled(owner_id: int) -> bool:
+    """
+    Возвращает общий флаг видимости карт Mastercard-владельца для обменов.
+
+    Если записи ещё нет, считаем карты включёнными, чтобы старые владельцы
+    не пропали из обменов до первого переключения в веб-кабинете.
+    """
+    await _ensure_mastercard_owner_card_visibility_table()
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT cards_enabled
+          FROM mastercard_owner_card_visibility
+         WHERE owner_id = ?
+         LIMIT 1
+        """,
+        (int(owner_id),),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+
+    if not row:
+        return True
+
+    return bool(int(row[0] or 0))
+
+
 async def _get_card_today_limit_stats(card_id: int) -> Dict[str, Any]:
     """
     Считает дневную статистику карты по завершённым p2p_orders.
@@ -362,6 +403,7 @@ async def get_available_mastercard_cards_for_amount(amount_rub: float) -> List[D
     - владелец карты имеет роль MasterCard;
     - карта активна;
     - сумма проходит min_amount_rub / max_amount_rub;
+    - владелец не выключил все свои карты в веб-кабинете;
     - не достигнуты дневные лимиты и пауза.
     """
     amount = float(amount_rub or 0)
@@ -380,6 +422,9 @@ async def get_available_mastercard_cards_for_amount(amount_rub: float) -> List[D
             owner_id = 0
 
         if owner_id <= 0 or owner_id not in mastercard_ids:
+            continue
+
+        if not await mastercard_owner_cards_are_enabled(owner_id):
             continue
 
         if not await mastercard_owner_can_accept_amount(owner_id, amount):
@@ -425,6 +470,9 @@ async def get_mastercard_card_for_issue(card_id: int, amount_rub: float) -> Tupl
     owner = await get_user(owner_id)
     if not owner or not _role_is_mastercard(owner.get("role")):
         return None, "Владелец карты больше не имеет роль Mastercard."
+
+    if not await mastercard_owner_cards_are_enabled(owner_id):
+        return None, "Владелец временно выключил свои карты для обменов."
 
     amount = float(amount_rub or 0)
 

@@ -129,6 +129,39 @@ async def _add_missing_card_columns(db: aiosqlite.Connection) -> None:
         await db.commit()
 
 
+async def _ensure_mastercard_owner_visibility_table(db: aiosqlite.Connection) -> None:
+    """
+    Создаёт таблицу общего выключателя карт Mastercard-владельца.
+
+    Таблица используется веб-кабинетом Mastercard. Если записи по владельцу нет,
+    считаем его карты включёнными, чтобы старые данные работали как раньше.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mastercard_owner_card_visibility (
+            owner_id INTEGER PRIMARY KEY,
+            cards_enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def _mastercard_owner_visibility_sql() -> str:
+    """SQL-условие: не показывать карты владельца, если он выключил их в кабинете."""
+    return """
+      AND (
+            owner_id IS NULL
+            OR NOT EXISTS (
+                SELECT 1
+                  FROM mastercard_owner_card_visibility v
+                 WHERE v.owner_id = cards.owner_id
+                   AND COALESCE(v.cards_enabled, 1) = 0
+            )
+          )
+    """
+
+
 # -----------------------------------------------------------------------------
 # Раздел: Инициализация и миграции
 # -----------------------------------------------------------------------------
@@ -145,6 +178,7 @@ async def init_cards_table() -> None:
     db = await get_db()
 
     await db.execute(_CREATE_TABLE_WITHDRAWALS)
+    await _ensure_mastercard_owner_visibility_table(db)
 
     cursor = await db.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='cards';"
@@ -256,17 +290,27 @@ async def get_active_cards(owner_id: Optional[int] = None) -> List[Dict[str, Any
     db = await get_db()
     db.row_factory = aiosqlite.Row
     await _add_missing_card_columns(db)
+    await _ensure_mastercard_owner_visibility_table(db)
+    owner_visibility_sql = _mastercard_owner_visibility_sql()
 
     if owner_id is None:
         cursor = await db.execute(
-            "SELECT * FROM cards WHERE COALESCE(is_active, 1) = 1 ORDER BY card_id;"
+            f"""
+            SELECT *
+            FROM cards
+            WHERE COALESCE(is_active, 1) = 1
+              {owner_visibility_sql}
+            ORDER BY card_id;
+            """
         )
     else:
         cursor = await db.execute(
-            """
+            f"""
             SELECT *
             FROM cards
-            WHERE owner_id = ? AND COALESCE(is_active, 1) = 1
+            WHERE owner_id = ?
+              AND COALESCE(is_active, 1) = 1
+              {owner_visibility_sql}
             ORDER BY card_id;
             """,
             (owner_id,),
@@ -291,6 +335,8 @@ async def get_active_cards_for_amount(
     db = await get_db()
     db.row_factory = aiosqlite.Row
     await _add_missing_card_columns(db)
+    await _ensure_mastercard_owner_visibility_table(db)
+    owner_visibility_sql = _mastercard_owner_visibility_sql()
 
     params: list[Any] = [float(amount_rub), float(amount_rub)]
     owner_filter = ""
@@ -306,6 +352,7 @@ async def get_active_cards_for_amount(
         WHERE COALESCE(is_active, 1) = 1
           AND (min_amount_rub IS NULL OR min_amount_rub <= ?)
           AND (max_amount_rub IS NULL OR max_amount_rub >= ?)
+          {owner_visibility_sql}
           {owner_filter}
         ORDER BY card_id;
         """,

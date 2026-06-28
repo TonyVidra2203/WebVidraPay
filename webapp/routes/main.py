@@ -406,6 +406,70 @@ def _ensure_web_support_tables_sync() -> None:
         conn.close()
 
 
+def _ensure_mastercard_visibility_table_sync() -> None:
+    """Создаёт таблицу общего выключателя карт Mastercard-владельца.
+
+    Этот флаг не меняет is_active у самих карт и не сбрасывает лимиты/фильтры.
+    Он нужен только для того, чтобы исключать владельца из выдачи реквизитов
+    и из WEB/VidraPay-потока новых заявок.
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mastercard_owner_card_visibility (
+                owner_id INTEGER PRIMARY KEY,
+                cards_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mastercard_owner_cards_enabled_sync(owner_id: int) -> bool:
+    """Возвращает True, если карты Mastercard-владельца доступны для новых обменов."""
+    try:
+        owner_id_int = int(owner_id)
+    except Exception:
+        return True
+
+    if owner_id_int <= 0:
+        return True
+
+    _ensure_mastercard_visibility_table_sync()
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT cards_enabled
+              FROM mastercard_owner_card_visibility
+             WHERE owner_id = ?
+             LIMIT 1
+            """,
+            (owner_id_int,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return True
+
+    try:
+        return bool(int(row["cards_enabled"]))
+    except Exception:
+        try:
+            return bool(int(row[0]))
+        except Exception:
+            return True
+
+
 def _web_get_order_extras(order_id: int) -> dict:
     """Возвращает WEB-чек и WEB/SMS-сообщения для отображения на сайте."""
     _ensure_web_support_tables_sync()
@@ -1552,9 +1616,15 @@ async def create_order(
             for u in all_users:
                 role = u.get("role")
                 tid = u.get("telegram_id")
-                if isinstance(tid, int) and (
-                    role in ("Operator", "Admin")
-                    or (role == "MasterCard" and tid in active_mc_sessions)
+                if isinstance(tid, int) and role in ("Operator", "Admin"):
+                    ops.append(tid)
+                    continue
+
+                if (
+                    isinstance(tid, int)
+                    and role == "MasterCard"
+                    and tid in active_mc_sessions
+                    and _mastercard_owner_cards_enabled_sync(int(tid))
                 ):
                     ops.append(tid)
 
