@@ -265,85 +265,93 @@ async def _get_new_order_block_context(request: Request, current_user_id: int | 
 
 
 async def _render_new_order_blocked_page(context: dict) -> HTMLResponse:
-    request = context.get("request")
-    current_user_id = context.get("current_user_id")
-    is_guest_mode = bool(context.get("is_guest_mode"))
+
     order_id = _safe_int(context.get("blocking_order_id"), 0)
     status_label = str(context.get("blocking_order_status_label") or "Активна")
-    hint = str(context.get("blocking_order_hint") or "Сначала отмените или завершите предыдущую заявку.")
-    error = str(context.get("error") or "Предыдущая заявка ещё активна.")
+    hint = str(context.get("blocking_order_hint") or "")
+    error = str(context.get("error") or "")
 
     cancel_form = ""
     if order_id > 0:
         cancel_form = f"""
-          <form method="post" action="/orders/{order_id}/cancel?next=/orders/new" style="margin:0">
-            <button class="btn danger" type="submit">Отменить заявку</button>
-          </form>
+        <form method="post" action="/orders/{order_id}/cancel?next=/orders/new">
+            <button style="width:100%;padding:12px;border-radius:12px;background:#ff4d4d;color:#fff;border:0;">
+                Отменить заявку
+            </button>
+        </form>
         """
 
-    return HTMLResponse(
-        f"""
+    return HTMLResponse(f"""
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <title>Заявка активна</title>
-  <style>
-    :root {{
-      --bg:#000;
-      --card:#121318;
-      --card2:#171820;
-      --line:rgba(255,255,255,.18);
-      --text:#f6f3ea;
-      --muted:#a9acb4;
-      --accent:#d6b35f;
-      --accent2:#e1c46f;
-      --danger:#ff6969;
-    }}
-    *{{box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
-    html,body{{margin:0;width:100%;min-height:100%;background:#000;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
-    body{{background:radial-gradient(circle at 50% 0%,rgba(214,179,95,.14),transparent 42%),#000}}
-    .page{{min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:18px}}
-    .box{{width:100%;max-width:430px;border:1px solid rgba(214,179,95,.26);border-radius:28px;background:linear-gradient(180deg,#171820,#0d0d10);box-shadow:0 24px 70px rgba(0,0,0,.72);overflow:hidden}}
-    .head{{padding:22px 20px 12px;text-align:center}}
-    .icon{{width:58px;height:58px;margin:0 auto 13px;border-radius:20px;display:grid;place-items:center;border:1px solid rgba(214,179,95,.30);background:rgba(214,179,95,.10);color:var(--accent2);font-size:28px;font-weight:950}}
-    h1{{margin:0;font-size:22px;line-height:1.15;font-weight:950;letter-spacing:-.25px}}
-    .text{{padding:0 22px 18px;text-align:center;color:var(--muted);font-size:14px;line-height:1.45}}
-    .status{{margin:0 18px 16px;padding:12px;border:1px solid rgba(255,255,255,.12);border-radius:18px;background:rgba(255,255,255,.035)}}
-    .row{{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:12px;line-height:1.35}}
-    .row + .row{{margin-top:7px}}
-    .row b{{color:var(--text);text-align:right}}
-    .actions{{display:grid;gap:9px;padding:0 18px 18px}}
-    .btn{{width:100%;min-height:48px;border:0;border-radius:17px;background:linear-gradient(135deg,#e1c46f,#caa24e);color:#161108;font-size:15px;font-weight:950;display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none;cursor:pointer}}
-    .btn.ghost{{border:1px solid var(--line);background:rgba(255,255,255,.045);color:var(--muted)}}
-    .btn.danger{{border:1px solid rgba(255,105,105,.28);background:rgba(255,105,105,.12);color:#ffd1d1}}
-    .btn:active{{transform:scale(.99)}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>MasterCard</title>
+
+{MC_PWA}
+
+<style>
+body {{
+    margin:0;
+    font-family:-apple-system;
+    background:#000;
+    color:#fff;
+}}
+
+.container {{
+    max-width:420px;
+    margin:80px auto;
+    padding:20px;
+}}
+
+.box {{
+    background:#121318;
+    border-radius:20px;
+    padding:20px;
+    border:1px solid rgba(255,215,120,0.2);
+}}
+
+.btn {{
+    display:block;
+    text-align:center;
+    padding:14px;
+    border-radius:14px;
+    background:linear-gradient(135deg,#e1c46f,#caa24e);
+    color:#000;
+    font-weight:700;
+    text-decoration:none;
+}}
+</style>
+
 </head>
+
 <body>
-  <main class="page">
-    <section class="box">
-      <div class="head">
-        <div class="icon">!</div>
-        <h1>Предыдущая заявка ещё активна</h1>
-      </div>
-      <div class="text">{html.escape(error)}<br>{html.escape(hint)}</div>
-      <div class="status">
-        <div class="row"><span>Заявка</span><b>#{order_id if order_id > 0 else "—"}</b></div>
-        <div class="row"><span>Статус</span><b>{html.escape(status_label)}</b></div>
-      </div>
-      <div class="actions">
-        <a class="btn ghost" href="/orders{('?focus=' + str(order_id)) if order_id > 0 else ''}">Открыть мои заявки</a>
+
+<div class="container">
+
+    <div class="box">
+        <h2>Заявка активна</h2>
+
+        <p>{error}</p>
+        <p style="color:#aaa">{hint}</p>
+
+        <hr>
+
+        <p>#{order_id}</p>
+        <p>{status_label}</p>
+
+        <a class="btn" href="/orders">Открыть заявки</a>
+
         {cancel_form}
-      </div>
-    </section>
-  </main>
+    </div>
+
+</div>
+
 </body>
 </html>
-        """,
-        status_code=409,
-    )
+""")
 
 
 async def _calculate_coin_amount_for_web(asset: str, rub_amount: float) -> float:

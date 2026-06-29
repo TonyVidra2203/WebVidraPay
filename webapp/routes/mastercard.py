@@ -32,6 +32,95 @@ DEFAULT_TRANSFER_PAUSE_MINUTES = 30
 NSK_TZ = ZoneInfo("Asia/Novosibirsk")
 
 
+MC_PWA = """
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/mc-apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/img/mc-favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/img/mc-favicon-16x16.png">
+<link rel="manifest" href="/static/img/mc-manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MasterCard">
+"""
+
+
+MC_WEB_USER_COOKIE = "mc_web_user_id"
+MC_WEB_ADMIN_COOKIE = "mc_web_admin_id"
+MC_WEB_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def _cookie_int(request: Request, name: str) -> Optional[int]:
+    try:
+        value = int(str(request.cookies.get(name) or "").strip())
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def _set_mastercard_web_cookies(
+    response: HTMLResponse,
+    user_id: int,
+    admin_id: Optional[int] = None,
+) -> HTMLResponse:
+    response.set_cookie(
+        MC_WEB_USER_COOKIE,
+        str(int(user_id)),
+        max_age=MC_WEB_COOKIE_MAX_AGE,
+        path="/mastercard",
+        secure=True,
+        httponly=False,
+        samesite="lax",
+    )
+
+    if admin_id:
+        response.set_cookie(
+            MC_WEB_ADMIN_COOKIE,
+            str(int(admin_id)),
+            max_age=MC_WEB_COOKIE_MAX_AGE,
+            path="/mastercard",
+            secure=True,
+            httponly=False,
+            samesite="lax",
+        )
+
+    return response
+
+
+def _mastercard_restore_script() -> str:
+    return """
+<script>
+(function(){
+  try {
+    var params = new URLSearchParams(window.location.search || "");
+    var userId = params.get("user_id") || "";
+    var adminId = params.get("admin_id") || "";
+
+    if (userId) {
+      window.localStorage.setItem("mc_web_user_id", userId);
+    }
+
+    if (adminId) {
+      window.localStorage.setItem("mc_web_admin_id", adminId);
+    }
+
+    if (!userId) {
+      var savedUserId = window.localStorage.getItem("mc_web_user_id") || "";
+      var savedAdminId = window.localStorage.getItem("mc_web_admin_id") || "";
+
+      if (savedUserId) {
+        var target = "/mastercard?user_id=" + encodeURIComponent(savedUserId);
+        if (savedAdminId) {
+          target += "&admin_id=" + encodeURIComponent(savedAdminId);
+        }
+        window.location.replace(target + (window.location.hash || ""));
+      }
+    }
+  } catch (e) {}
+})();
+</script>
+"""
+
 def _esc(value: Any) -> str:
     return html.escape(str(value or ""))
 
@@ -177,64 +266,69 @@ def _redirect(user_id: int, anchor: str = "", admin_id: Optional[int] = None) ->
     )
 
 
-def _alert_redirect(
-    user_id: int,
-    message: str,
-    anchor: str = "cards",
-    admin_id: Optional[int] = None,
-) -> HTMLResponse:
+def _alert_redirect(user_id: int, message: str, anchor: str = "cards", admin_id: Optional[int] = None):
+
     safe_message = _esc(str(message or ""))
     suffix = f"#{anchor}" if anchor else ""
     admin_part = f"&admin_id={int(admin_id)}" if admin_id else ""
     target_url = f"/mastercard?user_id={int(user_id)}{admin_part}{suffix}"
-    return HTMLResponse(
-        f"""
-        <!doctype html>
-        <html lang="ru">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-          <title>MasterCard</title>
-          <style>
-            :root {{
-              --bg:#000000;
-              --card:#121318;
-              --line:rgba(255,255,255,.20);
-              --text:#f6f3ea;
-              --muted:#a9acb4;
-              --accent:#d6b35f;
-              --accent2:#e1c46f;
-            }}
-            *{{box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
-            html,body{{margin:0;width:100%;min-height:100%;background:#000;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
-            .wrap{{min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:18px;background:radial-gradient(circle at 50% 0%,rgba(214,179,95,.14),transparent 42%),#000}}
-            .modal{{width:100%;max-width:360px;border:1px solid rgba(214,179,95,.28);border-radius:26px;background:linear-gradient(180deg,#171820,#0d0d10);box-shadow:0 28px 70px rgba(0,0,0,.72);overflow:hidden;text-align:center}}
-            .head{{padding:20px 18px 10px}}
-            .icon{{width:54px;height:54px;margin:0 auto 12px;border-radius:19px;display:grid;place-items:center;border:1px solid rgba(214,179,95,.30);background:rgba(214,179,95,.10);color:var(--accent2);font-size:26px;font-weight:950}}
-            h1{{margin:0;font-size:20px;line-height:1.15;font-weight:950;letter-spacing:-.25px}}
-            .text{{padding:8px 20px 18px;color:var(--muted);font-size:14px;line-height:1.45}}
-            .actions{{padding:0 18px 18px}}
-            .ok{{width:100%;min-height:48px;border:0;border-radius:17px;background:linear-gradient(135deg,#e1c46f,#caa24e);color:#161108;font-size:15px;font-weight:950;cursor:pointer}}
-            .ok:active{{transform:scale(.99)}}
-          </style>
-        </head>
-        <body>
-          <main class="wrap">
-            <section class="modal" role="dialog" aria-modal="true">
-              <div class="head">
-                <div class="icon">!</div>
-                <h1>Уведомление</h1>
-              </div>
-              <div class="text">{safe_message}</div>
-              <div class="actions">
-                <button class="ok" type="button" onclick="window.location.href='{target_url}'">OK</button>
-              </div>
-            </section>
-          </main>
-        </body>
-        </html>
-        """
-    )
+
+    return HTMLResponse(f"""
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>MasterCard</title>
+
+{MC_PWA}
+
+<style>
+body {{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,Arial;
+    background:#000;
+    color:#fff;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}}
+
+.card {{
+    width:320px;
+    background:#121318;
+    border-radius:20px;
+    padding:20px;
+    text-align:center;
+    border:1px solid rgba(255,215,120,0.3);
+}}
+
+button {{
+    width:100%;
+    padding:14px;
+    border-radius:14px;
+    border:0;
+    background:linear-gradient(135deg,#e1c46f,#caa24e);
+    font-weight:700;
+}}
+</style>
+
+</head>
+
+<body>
+
+<div class="card">
+    <h2>MasterCard</h2>
+    <p>{safe_message}</p>
+
+    <button onclick="location.href='{target_url}'">OK</button>
+</div>
+
+</body>
+</html>
+""")
 
 
 async def _ensure_mastercard_web_tables() -> None:
@@ -1142,6 +1236,10 @@ async def _render_access_denied() -> HTMLResponse:
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title>MasterCard</title>
+        """
+        + MC_PWA
+        + _mastercard_restore_script()
+        + """
           <style>
             body{margin:0;background:#000;color:#f6f3ea;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
             .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}
@@ -1246,6 +1344,8 @@ def _page(title: str, body: str, header_amount: str = "", header_control_html: s
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>{_esc(title)}</title>
+  {MC_PWA}
+  {_mastercard_restore_script()}
   <script>
     (function(){{
       try {{
@@ -1896,7 +1996,22 @@ def _page(title: str, body: str, header_amount: str = "", header_control_html: s
 
 
 @router.get("", response_class=HTMLResponse)
-async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
+async def mastercard_home(request: Request, user_id: int = 0) -> HTMLResponse:
+    try:
+        user_id = int(user_id or 0)
+    except Exception:
+        user_id = 0
+
+    if user_id <= 0:
+        saved_user_id = _cookie_int(request, MC_WEB_USER_COOKIE)
+        saved_admin_id = _cookie_int(request, MC_WEB_ADMIN_COOKIE)
+        if saved_user_id:
+            admin_part = f"&admin_id={int(saved_admin_id)}" if saved_admin_id else ""
+            return RedirectResponse(
+                url=f"/mastercard?user_id={int(saved_user_id)}{admin_part}",
+                status_code=303,
+            )
+
     if not await _is_mastercard_user(user_id):
         return await _render_access_denied()
 
@@ -2714,11 +2829,16 @@ async def mastercard_home(request: Request, user_id: int) -> HTMLResponse:
       </section>
     """
 
-    return _page(
+    response = _page(
         "MasterCard",
         body,
         f"{_fmt_compact_money(total_balance)} / {_fmt_compact_money(mastercard_deposit)}",
         top_cards_toggle_html,
+    )
+    return _set_mastercard_web_cookies(
+        response,
+        int(user_id),
+        int(admin_id) if admin_mode and admin_id else None,
     )
 
 
