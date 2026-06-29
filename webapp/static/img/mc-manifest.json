@@ -1,9 +1,10 @@
 {
+  "id": "/mastercard",
   "name": "MasterCard Cabinet",
   "short_name": "MasterCard",
   "description": "Личный веб-кабинет MasterCard",
   "start_url": "/mastercard",
-  "scope": "/mastercard",
+  "scope": "/mastercard/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#000000",

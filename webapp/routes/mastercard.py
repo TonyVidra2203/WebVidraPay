@@ -6,7 +6,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from db.connection import get_db
 from db.cards import (
@@ -36,12 +36,26 @@ MC_PWA = """
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/mc-apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/img/mc-favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/static/img/mc-favicon-16x16.png">
-<link rel="manifest" href="/static/img/mc-manifest.json">
+<link rel="manifest" href="/static/img/mc-manifest.json?v=3">
 <meta name="theme-color" content="#000000">
+<meta name="application-name" content="MasterCard">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="MasterCard">
+<script>
+(function(){
+  if (!("serviceWorker" in navigator)) return;
+
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("/mastercard/sw.js", { scope: "/mastercard/" })
+      .then(function(registration){
+        try { registration.update(); } catch (e) {}
+      })
+      .catch(function(){});
+  });
+})();
+</script>
 """
 
 
@@ -120,6 +134,91 @@ def _mastercard_restore_script() -> str:
 })();
 </script>
 """
+
+@router.get("/sw.js")
+async def mastercard_service_worker() -> Response:
+    """Service Worker для Android/PWA-режима MasterCard-кабинета.
+
+    Важно: динамические страницы кабинета не кэшируем, чтобы не показывать
+    устаревшие балансы, карты и заявки. Кэшируются только статические иконки.
+    """
+    sw_js = """
+const CACHE_NAME = "mastercard-pwa-v3";
+
+const STATIC_ASSETS = [
+  "/static/img/mc-apple-touch-icon.png",
+  "/static/img/mc-favicon-32x32.png",
+  "/static/img/mc-favicon-16x16.png",
+  "/static/img/mc-icon.png",
+  "/static/img/mc-icon-192.png",
+  "/static/img/mc-icon-512.png",
+  "/static/img/mc-manifest.json"
+];
+
+self.addEventListener("install", function(event) {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(function(cache) {
+        return cache.addAll(STATIC_ASSETS);
+      })
+      .catch(function() {})
+      .then(function() {
+        return self.skipWaiting();
+      })
+  );
+});
+
+self.addEventListener("activate", function(event) {
+  event.waitUntil(
+    caches.keys()
+      .then(function(keys) {
+        return Promise.all(
+          keys
+            .filter(function(key) { return key !== CACHE_NAME; })
+            .map(function(key) { return caches.delete(key); })
+        );
+      })
+      .then(function() {
+        return self.clients.claim();
+      })
+  );
+});
+
+self.addEventListener("fetch", function(event) {
+  const request = event.request;
+  const url = new URL(request.url);
+
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request));
+    return;
+  }
+
+  if (url.pathname.startsWith("/static/img/")) {
+    event.respondWith(
+      caches.match(request).then(function(cachedResponse) {
+        return cachedResponse || fetch(request).then(function(networkResponse) {
+          const clone = networkResponse.clone();
+          caches.open(CACHE_NAME).then(function(cache) {
+            cache.put(request, clone);
+          });
+          return networkResponse;
+        });
+      })
+    );
+  }
+});
+"""
+
+    return Response(
+        content=sw_js,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Service-Worker-Allowed": "/mastercard/",
+        },
+    )
+
+
 
 def _esc(value: Any) -> str:
     return html.escape(str(value or ""))
