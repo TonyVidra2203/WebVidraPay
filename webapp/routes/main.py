@@ -2049,6 +2049,7 @@ async def upload_order_receipt(
     except Exception:
         return RedirectResponse(url=f"/orders?focus={int(order_id)}", status_code=303)
 
+@router.post("/orders/{order_id}/chat")
 async def send_web_chat_message(
     request: Request,
     order_id: int,

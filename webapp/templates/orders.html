@@ -273,9 +273,9 @@
         }
 
         .status-info {
-            background: rgba(125, 145, 255, 0.16);
-            color: #dbe3ff;
-            border-color: rgba(145, 165, 255, 0.24);
+            background: rgba(216, 178, 106, 0.16);
+            color: #ffe0a0;
+            border-color: rgba(240, 200, 121, 0.24);
         }
 
         .status-muted {
@@ -335,42 +335,244 @@
         }
 
         .waiting-box {
-            background: var(--info-bg);
-            border-color: rgba(145, 165, 255, 0.24);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.12));
+            border-color: rgba(216, 178, 106, 0.18);
         }
 
 
-        .web-support-box {
-            border-radius: 18px;
-            padding: 18px;
-            margin-top: 20px;
-            border: 1px solid rgba(145, 165, 255, 0.24);
-            background: linear-gradient(135deg, #11151e, #171a24);
+        .current-order-card,
+        .web-support-box,
+        .web-support-card {
+            border-radius: 26px;
+            padding: 24px;
+            border: 1px solid rgba(216, 178, 106, 0.18);
+            background:
+                radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.045), transparent 34%),
+                linear-gradient(180deg, rgba(16, 18, 25, 0.98), rgba(8, 9, 13, 0.98));
+            box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
             overflow-x: hidden;
+        }
+
+        .web-support-card {
+            margin-bottom: 20px;
+        }
+
+        .web-support-head,
+        .current-order-headline {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            margin-bottom: 16px;
+        }
+
+        .web-support-title,
+        .current-order-title {
+            margin: 0;
+            color: #fff3d8;
+            font-size: 26px;
+            line-height: 1.15;
+            letter-spacing: -0.2px;
+        }
+
+        .current-order-id-inline {
+            flex: 0 0 auto;
+            color: #ffe2a4;
+            font-size: 16px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        .current-order-status-panel {
+            margin-top: 6px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(216, 178, 106, 0.16);
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.12));
+        }
+
+        .current-order-status-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .current-order-status-label {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .current-order-note {
+            margin: 10px 0 0;
+            color: #dfd0ad;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .current-order-details {
+            margin-top: 16px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .current-order-detail-row {
+            display: grid;
+            grid-template-columns: 132px minmax(0, 1fr);
+            gap: 12px;
+            align-items: baseline;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(216, 178, 106, 0.10);
+        }
+
+        .current-order-detail-row:last-child {
+            border-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .current-order-detail-label {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.35;
+        }
+
+        .current-order-detail-value {
+            color: #fff2d3;
+            font-size: 15px;
+            font-weight: 850;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .current-order-timer-inline {
+            color: #ffd98a;
+            font-weight: 950;
+        }
+
+        .current-order-actions {
+            margin-top: 16px;
         }
 
         .web-chat-list {
             display: grid;
             gap: 10px;
-            margin-top: 14px;
+            margin-top: 2px;
+            margin-bottom: 14px;
+            padding: 2px;
+            max-height: 340px;
+            overflow-y: auto;
         }
 
         .web-chat-msg {
-            border: 1px solid rgba(216, 178, 106, 0.14);
-            border-radius: 14px;
-            padding: 12px;
-            background: rgba(255, 255, 255, 0.04);
+            position: relative;
+            width: fit-content;
+            max-width: min(82%, 720px);
+            border: 1px solid rgba(216, 178, 106, 0.16);
+            border-radius: 18px 18px 18px 8px;
+            padding: 12px 14px;
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025));
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
         }
 
         .web-chat-msg.from-user {
-            background: rgba(216, 178, 106, 0.10);
+            justify-self: end;
+            border-radius: 18px 18px 8px 18px;
+            border-color: rgba(240, 200, 121, 0.28);
+            background:
+                linear-gradient(180deg, rgba(216, 178, 106, 0.18), rgba(216, 178, 106, 0.08));
         }
 
         .web-chat-author {
-            font-size: 12px;
+            font-size: 11px;
             color: var(--muted);
             margin-bottom: 5px;
-            font-weight: 700;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .web-chat-msg.from-user .web-chat-author {
+            color: #ffe0a0;
+        }
+
+        .web-chat-msg {
+            animation: webChatMessageIn 0.28s ease both;
+        }
+
+        .web-chat-line {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+        }
+
+        .web-chat-line.from-user {
+            justify-content: flex-end;
+        }
+
+        .web-chat-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            font-size: 12px;
+            font-weight: 950;
+            color: #17120b;
+            background: linear-gradient(135deg, #c79646, #f0c879);
+            box-shadow: 0 8px 20px rgba(216, 178, 106, 0.18);
+            border: 1px solid rgba(255, 238, 190, 0.18);
+        }
+
+        .web-chat-line.from-user .web-chat-avatar {
+            order: 2;
+            background: linear-gradient(135deg, #f0c879, #ffe0a0);
+        }
+.status-badge {
+            transition: background 0.24s ease, border-color 0.24s ease, color 0.24s ease, transform 0.24s ease, box-shadow 0.24s ease;
+        }
+
+        .status-badge.status-changed {
+            animation: statusPulse 0.7s ease;
+        }
+
+        @keyframes webChatMessageIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px) scale(0.98);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+40% {
+                opacity: 1;
+                transform: translateY(-3px);
+            }
+        }
+
+        @keyframes statusPulse {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 0 rgba(216, 178, 106, 0);
+            }
+            45% {
+                transform: scale(1.04);
+                box-shadow: 0 0 0 6px rgba(216, 178, 106, 0.10);
+            }
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 rgba(216, 178, 106, 0);
+            }
         }
 
         .web-chat-text {
@@ -380,28 +582,50 @@
             overflow-wrap: anywhere;
         }
 
+        .web-chat-form {
+            margin-top: 0;
+        }
+
+        .web-receipt-note {
+            margin-bottom: 14px;
+            padding: 13px 15px;
+            border-radius: 16px;
+            border: 1px solid rgba(216, 178, 106, 0.16);
+            background: rgba(216, 178, 106, 0.075);
+            color: #eadcbd;
+            line-height: 1.5;
+        }
+
         .file-input {
             width: 100%;
             min-height: 46px;
             padding: 11px 12px;
             border-radius: 14px;
             border: 1px solid rgba(216, 178, 106, 0.22);
-            background: rgba(255,255,255,0.04);
+            background: rgba(0, 0, 0, 0.24);
             color: var(--text);
             margin-top: 12px;
         }
 
         .textarea-input {
             width: 100%;
-            min-height: 92px;
-            padding: 12px;
-            border-radius: 14px;
-            border: 1px solid rgba(216, 178, 106, 0.22);
-            background: rgba(255,255,255,0.04);
+            min-height: 94px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(216, 178, 106, 0.20);
+            background: rgba(0, 0, 0, 0.30);
             color: var(--text);
             resize: vertical;
-            margin-top: 12px;
+            margin-top: 0;
             font: inherit;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        }
+
+        .textarea-input:focus {
+            border-color: rgba(240, 200, 121, 0.75);
+            box-shadow: 0 0 0 4px rgba(216, 178, 106, 0.13);
+            background: rgba(0, 0, 0, 0.42);
         }
 
         .hint {
@@ -412,156 +636,10 @@
         }
 
         .action-row {
-            margin-top: 16px;
+            margin-top: 14px;
             display: flex;
             gap: 12px;
             flex-wrap: wrap;
-        }
-
-        .history-item {
-            border-bottom: 1px solid rgba(216, 178, 106, 0.12);
-            padding: 14px 0;
-            overflow: hidden;
-        }
-
-        .history-item:last-child {
-            border-bottom: none;
-        }
-
-        .history-top {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-
-        .history-meta {
-            color: var(--muted);
-            font-size: 14px;
-            line-height: 1.5;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-
-        form.inline {
-            display: inline;
-        }
-
-        .timeline {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 14px;
-            margin-top: 18px;
-        }
-
-        .timeline-step {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(216, 178, 106, 0.14);
-            border-radius: 16px;
-            padding: 16px;
-            overflow: hidden;
-        }
-
-        .timeline-step.is-done {
-            background: rgba(80, 150, 90, 0.14);
-            border-color: rgba(120, 220, 140, 0.18);
-        }
-
-        .timeline-step.is-current {
-            background: rgba(216, 178, 106, 0.14);
-            border-color: rgba(240, 200, 121, 0.18);
-        }
-
-        .timeline-top {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
-        }
-
-        .timeline-icon {
-            width: 30px;
-            height: 30px;
-            border-radius: 999px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 15px;
-            font-weight: 700;
-            background: rgba(255, 255, 255, 0.10);
-            color: #fff1cf;
-            flex-shrink: 0;
-        }
-
-        .timeline-step.is-done .timeline-icon {
-            background: rgba(120, 220, 140, 0.20);
-            color: #d7ffdf;
-        }
-
-        .timeline-step.is-current .timeline-icon {
-            background: rgba(240, 200, 121, 0.22);
-            color: #fff0c4;
-        }
-
-        .timeline-title {
-            font-weight: 700;
-            font-size: 15px;
-            color: #fff1cf;
-        }
-
-        .timeline-text {
-            color: #e0d4b8;
-            line-height: 1.45;
-            font-size: 14px;
-            overflow-wrap: anywhere;
-        }
-
-        .copy-row {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-            max-width: 100%;
-        }
-
-        .copy-value {
-            word-break: break-word;
-            overflow-wrap: anywhere;
-            color: #fff2d3 !important;
-            max-width: 100%;
-        }
-
-        #payment-details-value {
-            color: #fff2d3 !important;
-        }
-
-        .copy-value,
-        .copy-value a,
-        .copy-value a:visited,
-        .copy-value a:hover,
-        .copy-value a:active,
-        .info-value,
-        .info-value a,
-        .info-value a:visited,
-        .info-value a:hover,
-        .info-value a:active,
-        .history-meta a,
-        .history-meta a:visited,
-        .history-meta a:hover,
-        .history-meta a:active {
-            color: #fff2d3 !important;
-            text-decoration: none;
-        }
-
-        a[x-apple-data-detectors],
-        a[x-apple-data-detectors-type="telephone"],
-        a[x-apple-data-detectors-type="address"],
-        a[x-apple-data-detectors-type="calendar-event"],
-        a[x-apple-data-detectors-type="tracking-number"] {
-            color: #fff2d3 !important;
-            text-decoration: none !important;
-            font-weight: 700 !important;
         }
 
         @media (max-width: 640px) {
@@ -643,7 +721,180 @@
                 overflow-wrap: anywhere;
                 word-break: break-word;
             }
+
+            .web-support-head {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .web-support-title {
+                font-size: 23px;
+            }
+
+            .web-support-badge {
+                width: fit-content;
+            }
+
+            .web-chat-list {
+                max-height: 300px;
+                padding: 12px;
+            }
+
+            .current-order-compact-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .web-chat-msg {
+                max-width: 100%;
+            }
         }
+
+        .current-order-status-line {
+            margin: 4px 0 14px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+        }
+
+        .current-order-status-panel {
+            padding: 0;
+            margin: 0;
+            border: 0;
+            background: transparent;
+        }
+
+        .web-support-card {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .web-support-card::before {
+            content: "";
+            position: absolute;
+            left: 24px;
+            right: 24px;
+            top: 62px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(216, 178, 106, 0.36), transparent);
+            pointer-events: none;
+        }
+
+        .web-chat-list {
+            margin-top: 20px;
+            margin-bottom: 16px;
+            padding: 0;
+            display: grid;
+            gap: 12px;
+            max-height: 360px;
+            overflow-y: auto;
+            scrollbar-width: none;
+        }
+
+        .web-chat-list::-webkit-scrollbar {
+            display: none;
+        }
+
+        .web-chat-line {
+            display: flex;
+            width: 100%;
+            animation: webChatMessageIn 0.28s ease both;
+        }
+
+        .web-chat-line.from-user {
+            justify-content: flex-end;
+        }
+
+        .web-chat-msg {
+            width: auto;
+            max-width: min(78%, 680px);
+            padding: 13px 15px;
+            border-radius: 18px;
+            border: 1px solid rgba(216, 178, 106, 0.15);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(216, 178, 106, 0.10), transparent 42%),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.050), rgba(0, 0, 0, 0.10));
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+        }
+
+        .web-chat-msg.from-user {
+            border-color: rgba(240, 200, 121, 0.30);
+            background:
+                radial-gradient(circle at 100% 0%, rgba(240, 200, 121, 0.20), transparent 46%),
+                linear-gradient(180deg, rgba(216, 178, 106, 0.17), rgba(0, 0, 0, 0.10));
+        }
+
+        .web-chat-author {
+            margin-bottom: 7px;
+        }
+
+        .web-chat-author-mark {
+            display: inline-flex;
+            align-items: center;
+            min-height: 22px;
+            padding: 4px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(216, 178, 106, 0.18);
+            background: rgba(0, 0, 0, 0.20);
+            color: #e7d7b5;
+            font-size: 11px;
+            font-weight: 950;
+            line-height: 1;
+            letter-spacing: 0.2px;
+        }
+
+        .web-chat-msg.from-user .web-chat-author {
+            text-align: right;
+        }
+
+        .web-chat-msg.from-user .web-chat-author-mark {
+            color: #17120b;
+            background: linear-gradient(135deg, #c79646, #f0c879);
+            border-color: rgba(255, 238, 190, 0.22);
+        }
+
+        .web-chat-text {
+            color: #fff2d3;
+            line-height: 1.48;
+            font-size: 15px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .web-chat-form {
+            margin-top: 4px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(216, 178, 106, 0.12);
+        }
+
+        .textarea-input {
+            min-height: 86px;
+            border-radius: 18px;
+            background:
+                radial-gradient(circle at 50% 0%, rgba(216, 178, 106, 0.055), transparent 45%),
+                rgba(0, 0, 0, 0.30);
+        }
+
+        @media (max-width: 640px) {
+            .web-support-card::before {
+                left: 18px;
+                right: 18px;
+                top: 58px;
+            }
+
+            .web-chat-list {
+                max-height: 320px;
+                padding: 0;
+            }
+
+            .web-chat-msg {
+                max-width: 92%;
+            }
+
+            .current-order-status-line {
+                margin-bottom: 12px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -675,7 +926,7 @@
             <div id="orders-live-root">
             {% if ns.active_order %}
             <div
-                class="card"
+                class="card current-order-card"
                 id="latest-order-card"
                 data-order-id="{{ ns.active_order.order_id }}"
                 data-status-label="{{ ns.active_order.status_label }}"
@@ -689,101 +940,47 @@
                 data-show-web-expire-timer="{{ '1' if ns.active_order.show_web_expire_timer else '0' }}"
                 data-web-expire-seconds-left="{{ ns.active_order.web_expire_seconds_left or 0 }}"
             >
-                <div class="current-order-head">
-                    <div class="current-order-title-wrap">
-                        <h2 class="current-order-title">Текущая заявка</h2>
-                    </div>
-                    <div class="current-order-id">#{{ ns.active_order.order_id }}</div>
+                <div class="current-order-headline">
+                    <h2 class="current-order-title">Текущая заявка</h2>
+                    <div class="current-order-id-inline">#{{ ns.active_order.order_id }}</div>
                 </div>
 
-                {% if ns.active_order.show_web_expire_timer %}
-                <div class="current-order-timer">
-                    <div class="current-order-timer-label">Осталось времени</div>
-                    <div class="current-order-timer-value" id="web-expire-timer-value">
-                        {{ ns.active_order.web_expire_minutes_left }} мин.
-                    </div>
+                <div class="current-order-status-line">
+                    <span class="status-badge status-{{ ns.active_order.status_class }}">{{ ns.active_order.status_label }}</span>
                 </div>
-                {% endif %}
 
-                <p>
-                    <span class="status-badge status-{{ ns.active_order.status_class }}">
-                        {{ ns.active_order.status_label }}
-                    </span>
-                </p>
-
-                <p class="muted">{{ ns.active_order.status_hint }}</p>
-
-                {% if ns.active_order.show_web_progress %}
-                <div class="timeline">
-                    <div class="timeline-step {% if ns.active_order.web_step_payment_received %}is-done{% else %}is-current{% endif %}">
-                        <div class="timeline-top">
-                            <div class="timeline-icon">
-                                {% if ns.active_order.web_step_payment_received %}✓{% else %}1{% endif %}
-                            </div>
-                            <div class="timeline-title">Этап 1: обмен запущен</div>
-                        </div>
-                        <div class="timeline-text">
-                            Блок меняется после того, как оператор в Telegram начнёт обмен.
-                        </div>
+                <div class="current-order-details">
+                    <div class="current-order-detail-row">
+                        <span class="current-order-detail-label">Осталось времени</span>
+                        <span class="current-order-detail-value">{{ ns.active_order.web_expire_minutes_left }} мин.</span>
                     </div>
-
-                    <div class="timeline-step {% if ns.active_order.web_step_exchange_started %}is-done{% elif ns.active_order.web_step_payment_received %}is-current{% endif %}">
-                        <div class="timeline-top">
-                            <div class="timeline-icon">
-                                {% if ns.active_order.web_step_exchange_started %}✓{% else %}2{% endif %}
-                            </div>
-                            <div class="timeline-title">Этап 2: средства на обменнике</div>
-                        </div>
-                        <div class="timeline-text">
-                            Блок меняется, когда средства отправлены на обменник.
-                        </div>
+                    <div class="current-order-detail-row">
+                        <span class="current-order-detail-label">К оплате</span>
+                        <span class="current-order-detail-value">{{ "%.2f"|format(ns.active_order.total_rub) }} ₽</span>
                     </div>
-
-                    <div class="timeline-step {% if ns.active_order.web_step_wallet_transfer %}is-done{% elif ns.active_order.web_step_exchange_started %}is-current{% endif %}">
-                        <div class="timeline-top">
-                            <div class="timeline-icon">
-                                {% if ns.active_order.web_step_wallet_transfer %}✓{% else %}3{% endif %}
-                            </div>
-                            <div class="timeline-title">Этап 3: перевод на ваш кошелек</div>
-                        </div>
-                        <div class="timeline-text">
-                            Блок меняется, когда готова ссылка на транзакцию.
-                        </div>
+                    <div class="current-order-detail-row">
+                        <span class="current-order-detail-label">К выдаче</span>
+                        <span class="current-order-detail-value">{{ "%.8f"|format(ns.active_order.btc_amount) }} {{ ns.active_order.coin }}</span>
                     </div>
+                    <div class="current-order-detail-row">
+                        <span class="current-order-detail-label">Кошелёк</span>
+                        <span class="current-order-detail-value">{{ (ns.active_order.wallet[:8] ~ "..." ~ ns.active_order.wallet[-6:]) if ns.active_order.wallet and (ns.active_order.wallet|length>18) else (ns.active_order.wallet or "—") }}</span>
+                    </div>
+                    {% if ns.active_order.show_web_expire_timer %}
+                    <div class="current-order-detail-row">
+                        <span class="current-order-detail-label">Осталось времени</span>
+                        <span class="current-order-detail-value current-order-timer-inline" id="web-expire-timer-value">
+                            {{ ns.active_order.web_expire_minutes_left }} мин.
+                        </span>
+                    </div>
+                    {% endif %}
                 </div>
-                {% endif %}
-
-                {% if not ns.active_order.show_tx_details %}
-                <div class="grid current-order-meta-grid">
-                    <div class="info-box">
-                        <div class="info-label">Сумма к оплате</div>
-                        <div class="info-value">{{ "%.2f"|format(ns.active_order.total_rub) }} ₽</div>
-                    </div>
-
-                    <div class="info-box">
-                        <div class="info-label">К выдаче</div>
-                        <div class="info-value">{{ "%.8f"|format(ns.active_order.btc_amount) }} {{ ns.active_order.coin }}</div>
-                    </div>
-
-                    <div class="info-box">
-                        <div class="info-label">Создана</div>
-                        <div class="info-value">{{ ns.active_order.created_at_view }}</div>
-                    </div>
-                </div>
-                {% endif %}
 
                 {% if not ns.active_order.has_payment_details %}
-                <div class="waiting-box">
-                    <h3 style="margin-top:0;">Поиск оператора</h3>
-                    <div class="hint" style="margin-top:0;">
-                        Заявка создана и ожидает подключения оператора. Если вы передумали, можете отменить заявку.
-                    </div>
-
-                    <div class="action-row">
-                        <form method="post" action="/orders/{{ ns.active_order.order_id }}/cancel" class="inline">
-                            <button type="submit" class="btn btn-danger">Отменить</button>
-                        </form>
-                    </div>
+                <div class="current-order-actions">
+                    <form method="post" action="/orders/{{ ns.active_order.order_id }}/cancel" class="inline">
+                        <button type="submit" class="btn btn-danger">Отменить заявку</button>
+                    </form>
                 </div>
                 {% endif %}
 
@@ -846,56 +1043,6 @@
                 {% endif %}
 
 
-                {% if ns.active_order.payment_confirmed_at or ns.active_order.web_receipt_requested or ns.active_order.web_chat_has_messages %}
-                <div class="web-support-box">
-                    <h3 style="margin-top:0;">Чек и SMS-чат</h3>
-
-                    {% if ns.active_order.web_receipt_requested %}
-                    <div class="hint" style="margin-top:0;">
-                        {% if ns.active_order.web_receipt_status == 'rejected' %}
-                            ❌ Чек отклонён. {{ ns.active_order.web_receipt_reject_reason or "Пожалуйста, загрузите корректный PDF-файл." }}
-                        {% else %}
-                            🧾 Оператор запросил чек об оплате. Загрузите файл строго в формате PDF.
-                        {% endif %}
-                    </div>
-                    <form method="post" action="/orders/{{ ns.active_order.order_id }}/receipt" enctype="multipart/form-data">
-                        <input class="file-input" type="file" name="receipt" accept="application/pdf,.pdf" required>
-                        <div class="action-row">
-                            <button type="submit" class="btn btn-success">Отправить чек PDF</button>
-                        </div>
-                    </form>
-                    {% elif ns.active_order.web_receipt_uploaded %}
-                    <div class="hint" style="margin-top:0;">
-                        ✅ Чек отправлен оператору и находится на проверке{% if ns.active_order.web_receipt_filename %}: {{ ns.active_order.web_receipt_filename }}{% endif %}.
-                    </div>
-                    {% else %}
-                    <div class="hint" style="margin-top:0;">
-                        Если оператор запросит чек, здесь появится форма загрузки PDF.
-                    </div>
-                    {% endif %}
-
-                    {% if ns.active_order.web_chat_has_messages %}
-                    <div class="web-chat-list">
-                        {% for msg in ns.active_order.web_chat_messages %}
-                        <div class="web-chat-msg {% if msg.sender == 'user' %}from-user{% endif %}">
-                            <div class="web-chat-author">
-                                {% if msg.sender == 'user' %}Вы{% else %}Оператор{% endif %}
-                            </div>
-                            <div class="web-chat-text">{{ msg.text }}</div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                    {% endif %}
-
-                    <form method="post" action="/orders/{{ ns.active_order.order_id }}/chat">
-                        <textarea class="textarea-input" name="message" maxlength="2000" placeholder="Напишите сообщение оператору" required></textarea>
-                        <div class="action-row">
-                            <button type="submit" class="btn btn-success">Отправить сообщение</button>
-                        </div>
-                    </form>
-                </div>
-                {% endif %}
-
                 {% if ns.active_order.show_tx_details %}
                 <div class="success-box">
                     <h3 style="margin-top:0;">Детали транзакции</h3>
@@ -913,7 +1060,7 @@
 
                         <div class="info-box">
                             <div class="info-label">Кошелёк получателя</div>
-                            <div class="info-value">{{ ns.active_order.wallet or "—" }}</div>
+                            <div class="info-value">{{ (ns.active_order.wallet[:8] ~ "..." ~ ns.active_order.wallet[-6:]) if ns.active_order.wallet and (ns.active_order.wallet|length>18) else (ns.active_order.wallet or "—") }}</div>
                         </div>
 
                         <div class="info-box">
@@ -945,52 +1092,60 @@
             </div>
             {% endif %}
 
-            <div class="card">
-                <h2>История</h2>
+            {% if ns.active_order %}
+            <div class="card web-support-card">
+                <div class="web-support-head">
+                    <h2 class="web-support-title">SMS-чат</h2>
+                </div>
 
-                {% set history_ns = namespace(has_items=False) %}
-
-                {% if orders %}
-                    {% for order in orders %}
-                        {% if not order.is_active_for_web %}
-                            {% set history_ns.has_items = True %}
-                            <div class="history-item">
-                                <div class="history-top">
-                                    <strong>#{{ order.order_id }}</strong>
-                                    <span class="status-badge status-{{ order.status_class }}">{{ order.status_label }}</span>
-                                </div>
-
-                                <div class="history-meta">
-                                    {{ "%.2f"|format(order.total_rub) }} ₽ ·
-                                    {{ "%.8f"|format(order.btc_amount) }} {{ order.coin }} ·
-                                    Создана: {{ order.created_at_view }}
-                                </div>
-
-                                {% if order.has_payment_details %}
-                                <div class="history-meta" style="margin-top:8px;">
-                                    Банк: {{ order.bank_name or "—" }}
-                                </div>
-                                {% endif %}
-
-                                {% if order.tx_to %}
-                                <div class="history-meta" style="margin-top:8px;">
-                                    Перевод монет:
-                                    <a href="{{ order.tx_to }}" target="_blank" rel="noopener noreferrer">{{ order.tx_to }}</a>
-                                </div>
-                                {% endif %}
-                            </div>
-                        {% endif %}
-                    {% endfor %}
-                {% endif %}
-
-                {% if not history_ns.has_items %}
-                    {% if is_guest_mode %}
-                        <p class="muted">История заявок в текущей сессии пока пуста.</p>
+                {% if ns.active_order.web_receipt_requested %}
+                <div class="web-receipt-note">
+                    {% if ns.active_order.web_receipt_status == 'rejected' %}
+                        ❌ Чек отклонён. {{ ns.active_order.web_receipt_reject_reason or "Пожалуйста, загрузите корректный PDF-файл." }}
                     {% else %}
-                        <p class="muted">Завершённых или отменённых заявок пока нет.</p>
+                        🧾 Оператор запросил чек об оплате. Загрузите файл строго в формате PDF.
                     {% endif %}
+                </div>
+                <form method="post" action="/orders/{{ ns.active_order.order_id }}/receipt" enctype="multipart/form-data">
+                    <input class="file-input" type="file" name="receipt" accept="application/pdf,.pdf" required>
+                    <div class="action-row">
+                        <button type="submit" class="btn btn-success">Отправить чек PDF</button>
+                    </div>
+                </form>
+                {% elif ns.active_order.web_receipt_uploaded %}
+                <div class="web-receipt-note">
+                    ✅ Чек отправлен оператору и находится на проверке{% if ns.active_order.web_receipt_filename %}: {{ ns.active_order.web_receipt_filename }}{% endif %}.
+                </div>
                 {% endif %}
+
+                {% if ns.active_order.web_chat_has_messages %}
+                <div class="web-chat-list" id="web-chat-list">
+                    {% for msg in ns.active_order.web_chat_messages %}
+                    <div class="web-chat-line {% if msg.sender == 'user' %}from-user{% endif %}">
+                        <div class="web-chat-msg {% if msg.sender == 'user' %}from-user{% endif %}">
+                            <div class="web-chat-author">
+                                <span class="web-chat-author-mark">{% if msg.sender == 'user' %}Вы{% else %}Оператор{% endif %}</span>
+                            </div>
+                            <div class="web-chat-text">{{ msg.text }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+<form class="web-chat-form" method="post" action="/orders/{{ ns.active_order.order_id }}/chat">
+                    <textarea class="textarea-input" name="message" maxlength="2000" placeholder="Напишите сообщение оператору" required></textarea>
+                    <div class="action-row">
+                        <button type="submit" class="btn btn-success">Отправить сообщение</button>
+                    </div>
+                </form>
             </div>
+            {% else %}
+            <div class="card web-support-card">
+                <div class="web-support-head">
+                    <h2 class="web-support-title">SMS-чат</h2>
+                </div>
+            </div>
+            {% endif %}
 
             </div>
 
@@ -1004,6 +1159,8 @@
             let webExpireSecondsLeft = 0;
             let showWebExpireTimer = false;
             let pollInFlight = false;
+            let lastStatusLabel = "";
+            let lastChatMessageCount = 0;
 
             const getLiveRoot = () => document.getElementById("orders-live-root");
             const getLatestCard = () => document.getElementById("latest-order-card");
@@ -1040,6 +1197,51 @@
                     button.textContent = originalText;
                     button.classList.remove("copied");
                 }, 2000);
+            };
+
+            const getStatusBadge = () => {
+                const latestCard = getLatestCard();
+                return latestCard ? latestCard.querySelector(".status-badge") : null;
+            };
+
+            const getChatList = () => document.getElementById("web-chat-list");
+
+            const getChatMessageCount = () => {
+                const chatList = getChatList();
+                return chatList ? chatList.querySelectorAll(".web-chat-line").length : 0;
+            };
+
+            const scrollChatToBottom = (behavior = "auto") => {
+                const chatList = getChatList();
+                if (!chatList) return;
+
+                requestAnimationFrame(() => {
+                    chatList.scrollTo({
+                        top: chatList.scrollHeight,
+                        behavior: behavior
+                    });
+                });
+            };
+
+            const syncVisualState = ({ animateStatus = false, animateChat = false } = {}) => {
+                const statusBadge = getStatusBadge();
+                const currentStatusLabel = statusBadge ? statusBadge.textContent.trim() : "";
+                const currentChatMessageCount = getChatMessageCount();
+
+                if (animateStatus && statusBadge && lastStatusLabel && currentStatusLabel && currentStatusLabel !== lastStatusLabel) {
+                    statusBadge.classList.remove("status-changed");
+                    void statusBadge.offsetWidth;
+                    statusBadge.classList.add("status-changed");
+                }
+
+                if (animateChat && currentChatMessageCount > lastChatMessageCount) {
+                    scrollChatToBottom("smooth");
+                } else if (!animateChat) {
+                    scrollChatToBottom("auto");
+                }
+
+                lastStatusLabel = currentStatusLabel;
+                lastChatMessageCount = currentChatMessageCount;
             };
 
             const setupCopyButtons = () => {
@@ -1151,6 +1353,7 @@
                     liveRoot.innerHTML = incomingRoot.innerHTML;
                     setupCopyButtons();
                     syncTimerFromDom();
+                    syncVisualState({ animateStatus: true, animateChat: true });
                 } catch (e) {
                     // silently ignore temporary network errors
                 } finally {
@@ -1160,6 +1363,7 @@
 
             setupCopyButtons();
             syncTimerFromDom();
+            syncVisualState();
 
             setInterval(() => {
                 const expireTimerValue = getExpireTimerValue();

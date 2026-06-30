@@ -249,6 +249,10 @@
             border-color: rgba(216, 178, 106, 0.28);
         }
 
+        .step-card.is-ready .step-status {
+            color: var(--gold-2);
+        }
+
         .step-toggle {
             width: 100%;
             min-height: 68px;
@@ -270,10 +274,19 @@
             border-radius: 15px;
             display: grid;
             place-items: center;
-            color: #161108;
-            font-size: 15px;
+            color: rgba(255, 255, 255, 0.32);
+            font-size: 19px;
             font-weight: 950;
+            background: rgba(255, 255, 255, 0.055);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+            transition: 0.2s ease;
+        }
+
+        .step-card.is-ready .step-number {
+            color: #161108;
             background: linear-gradient(135deg, #c79646, #f0c879);
+            border-color: rgba(240, 200, 121, 0.55);
             box-shadow: 0 10px 24px rgba(216, 178, 106, 0.16);
         }
 
@@ -295,7 +308,7 @@
             display: block;
             margin-top: 6px;
             font-size: 13px;
-            color: var(--gold-2);
+            color: var(--muted-2);
             line-height: 1.35;
         }
 
@@ -932,12 +945,12 @@
 
                     <div class="order-shell">
                         <div class="steps-column">
-                            <section class="step-card is-open is-ready" id="step_coin">
+                            <section class="step-card" id="step_coin">
                                 <button class="step-toggle" type="button" data-step-toggle="step_coin">
-                                    <span class="step-number">1</span>
+                                    <span class="step-number">✓</span>
                                     <span>
                                         <span class="step-title">Выберите монету</span>
-                                        <span class="step-status" id="step_coin_status">Выбрано: BTC</span>
+                                        <span class="step-status" id="step_coin_status">Не выбрано</span>
                                     </span>
                                     <span class="step-arrow">⌄</span>
                                 </button>
@@ -970,7 +983,7 @@
                                             </label>
 
                                             <label class="coin-option">
-                                                <input type="radio" name="coin_choice" value="BTC" checked>
+                                                <input type="radio" name="coin_choice" value="BTC">
                                                 <span class="coin-pill">
                                                     <span class="coin-name">BTC</span>
                                                     <span class="coin-network">Bitcoin</span>
@@ -979,10 +992,11 @@
                                         </div>
 
                                         <select id="coin" name="coin" required style="display:none;">
+                                            <option value="" selected disabled hidden>Выберите монету</option>
                                             <option value="USDT">USDT (TRC20)</option>
                                             <option value="LTC">LTC (Litecoin)</option>
                                             <option value="XMR">XMR (Monero)</option>
-                                            <option value="BTC" selected>BTC (Bitcoin)</option>
+                                            <option value="BTC">BTC (Bitcoin)</option>
                                         </select>
                                     </div>
                                 </div>
@@ -990,7 +1004,7 @@
 
                             <section class="step-card" id="step_amount">
                                 <button class="step-toggle" type="button" data-step-toggle="step_amount">
-                                    <span class="step-number">2</span>
+                                    <span class="step-number">✓</span>
                                     <span>
                                         <span class="step-title">Укажите сумму</span>
                                         <span class="step-status" id="step_amount_status">Не заполнено</span>
@@ -1002,7 +1016,7 @@
                                     <div class="step-panel-inner">
                                         <div class="mode-switch" role="radiogroup" aria-label="Способ ввода суммы">
                                             <label class="mode-option">
-                                                <input type="radio" name="input_mode_choice" value="rub" checked>
+                                                <input type="radio" name="input_mode_choice" value="rub">
                                                 <span class="mode-pill">Сумма в RUB</span>
                                             </label>
 
@@ -1012,15 +1026,16 @@
                                             </label>
                                         </div>
 
-                                        <select id="input_mode" name="input_mode" style="display:none;">
-                                            <option value="rub" selected>Сумму в RUB</option>
+                                        <select id="input_mode" name="input_mode" required style="display:none;">
+                                            <option value="" selected disabled hidden>Выберите способ ввода суммы</option>
+                                            <option value="rub">Сумму в RUB</option>
                                             <option value="coin">Количество монет</option>
                                         </select>
 
                                         <div class="amount-box">
                                             <div class="field">
-                                                <label for="active_amount" id="active_amount_label">Сумма в RUB</label>
-                                                <input type="number" step="1" min="1200" id="active_amount" inputmode="decimal" required placeholder="Введите сумму в RUB">
+                                                <label for="active_amount" id="active_amount_label">Сумма</label>
+                                                <input type="number" step="1" min="0" id="active_amount" inputmode="decimal" required disabled placeholder="Сначала выберите способ ввода суммы">
 
                                                 <div class="amount-result-box" id="amount_result_box">
                                                     <div class="amount-result-label" id="amount_result_label">Рассчитанная сумма</div>
@@ -1045,30 +1060,40 @@
 
                             <section class="step-card" id="step_payment">
                                 <button class="step-toggle" type="button" data-step-toggle="step_payment">
-                                    <span class="step-number">3</span>
+                                    <span class="step-number">✓</span>
                                     <span>
-                                        <span class="step-title">Как будете оплачивать</span>
-                                        <span class="step-status" id="step_payment_status">Выбрано: Карта</span>
+                                        <span class="step-title">Перевод по СБП или Карта?</span>
+                                        <span class="step-status" id="step_payment_status">Не выбрано</span>
                                     </span>
                                     <span class="step-arrow">⌄</span>
                                 </button>
 
                                 <div class="step-panel">
                                     <div class="step-panel-inner">
-                                        <div class="field">
-                                            <label for="payment_details_type">Способ перевода</label>
-                                            <select id="payment_details_type" name="payment_details_type" required>
-                                                <option value="card" selected>Перевод по номеру карты</option>
-                                                <option value="sbp">Перевод по СБП</option>
-                                            </select>
+                                        <div class="mode-switch" role="radiogroup" aria-label="Способ оплаты">
+                                            <label class="mode-option">
+                                                <input type="radio" name="payment_details_type_choice" value="sbp">
+                                                <span class="mode-pill">СБП</span>
+                                            </label>
+
+                                            <label class="mode-option">
+                                                <input type="radio" name="payment_details_type_choice" value="card">
+                                                <span class="mode-pill">Карта</span>
+                                            </label>
                                         </div>
+
+                                        <select id="payment_details_type" name="payment_details_type" required style="display:none;">
+                                            <option value="" selected disabled hidden>Выберите способ оплаты</option>
+                                            <option value="sbp">Перевод по СБП</option>
+                                            <option value="card">Перевод по номеру карты</option>
+                                        </select>
                                     </div>
                                 </div>
                             </section>
 
                             <section class="step-card" id="step_wallet">
                                 <button class="step-toggle" type="button" data-step-toggle="step_wallet">
-                                    <span class="step-number">4</span>
+                                    <span class="step-number">✓</span>
                                     <span>
                                         <span class="step-title">Кошелёк для получения</span>
                                         <span class="step-status" id="step_wallet_status">Не заполнено</span>
@@ -1102,11 +1127,11 @@
                             <div class="summary-list">
                                 <div class="summary-item">
                                     <span>Монета</span>
-                                    <b id="summary_coin">BTC</b>
+                                    <b id="summary_coin">—</b>
                                 </div>
                                 <div class="summary-item">
                                     <span>Способ оплаты</span>
-                                    <b id="summary_payment">Карта</b>
+                                    <b id="summary_payment">—</b>
                                 </div>
                                 <div class="summary-item">
                                     <span>Кошелёк</span>
@@ -1118,7 +1143,7 @@
 
                             <div class="submit-wrap">
                                 <button class="btn" type="submit" id="submit_button" disabled>Создать заявку</button>
-                                <div class="submit-hint" id="submit_hint">Заполните сумму и кошелёк, чтобы создать заявку.</div>
+                                <div class="submit-hint" id="submit_hint">Заполните все шаги, чтобы создать заявку.</div>
                             </div>
                         </aside>
                     </div>
@@ -1169,7 +1194,9 @@
         const coinAmountInput = document.getElementById("btc_amount");
         const walletInput = document.getElementById("wallet");
         const paymentDetailsType = document.getElementById("payment_details_type");
+        const paymentChoiceInputs = document.querySelectorAll("input[name='payment_details_type_choice']");
 
+        const stepCoin = document.getElementById("step_coin");
         const stepAmount = document.getElementById("step_amount");
         const stepPayment = document.getElementById("step_payment");
         const stepWallet = document.getElementById("step_wallet");
@@ -1260,8 +1287,20 @@
             }).format(Number(value) || 0) + " " + coin;
         }
 
+        function getSelectedCoin() {
+            return coinSelect ? coinSelect.value : "";
+        }
+
+        function getSelectedInputMode() {
+            return inputModeSelect ? inputModeSelect.value : "";
+        }
+
+        function getSelectedPaymentType() {
+            return paymentDetailsType ? paymentDetailsType.value : "";
+        }
+
         function getMinRubAmount() {
-            return coinSelect.value === "XMR" ? XMR_MIN_RUB_AMOUNT : DEFAULT_MIN_RUB_AMOUNT;
+            return getSelectedCoin() === "XMR" ? XMR_MIN_RUB_AMOUNT : DEFAULT_MIN_RUB_AMOUNT;
         }
 
         function shortenWallet(value) {
@@ -1276,7 +1315,14 @@
         }
 
         function paymentLabel() {
-            return paymentDetailsType && paymentDetailsType.value === "sbp" ? "СБП" : "Карта";
+            const paymentType = getSelectedPaymentType();
+            if (paymentType === "sbp") {
+                return "СБП";
+            }
+            if (paymentType === "card") {
+                return "Карта";
+            }
+            return "—";
         }
 
         function setCommissionText(totalText, rubText, coinText) {
@@ -1310,7 +1356,7 @@
 
         function setEmptyState() {
             hasValidCalculation = false;
-            setCommissionText("—", "Введите сумму во втором шаге", "");
+            setCommissionText("—", "Выберите монету, способ ввода суммы и введите сумму.", "");
             setRateText("Текущий курс USD → RUB: —");
             amountResultBox.classList.remove("show");
             amountResultLabel.textContent = "Рассчитанная сумма";
@@ -1328,10 +1374,13 @@
         }
 
         function updateMinRubUi() {
+            const coin = getSelectedCoin();
             const minRub = getMinRubAmount();
 
             if (amountInputHint) {
-                amountInputHint.textContent = "Минимальная сумма заявки для " + coinSelect.value + " — " + formatRub(minRub) + ".";
+                amountInputHint.textContent = coin
+                    ? "Минимальная сумма заявки для " + coin + " — " + formatRub(minRub) + "."
+                    : "Сначала выберите монету. Для XMR минимальная сумма — 6 000 ₽, для остальных монет — 1 200 ₽.";
             }
 
             if (rubMinWarning) {
@@ -1340,12 +1389,23 @@
         }
 
         function updateInputModeUi() {
-            const mode = inputModeSelect ? inputModeSelect.value : "rub";
-            const coin = coinSelect.value;
+            const mode = getSelectedInputMode();
+            const coin = getSelectedCoin();
+
+            if (!mode) {
+                activeAmountLabel.textContent = "Сумма";
+                activeAmountInput.placeholder = "Сначала выберите способ ввода суммы";
+                activeAmountInput.step = "1";
+                activeAmountInput.min = "0";
+                activeAmountInput.disabled = true;
+                return;
+            }
+
+            activeAmountInput.disabled = false;
 
             if (mode === "coin") {
                 activeAmountLabel.textContent = "Количество монет";
-                activeAmountInput.placeholder = "Введите количество " + coin;
+                activeAmountInput.placeholder = coin ? "Введите количество " + coin : "Сначала выберите монету";
                 activeAmountInput.step = getCoinStep(coin);
                 activeAmountInput.min = "0";
                 activeAmountInput.inputMode = "decimal";
@@ -1359,7 +1419,7 @@
         }
 
         function updateResultUi(data) {
-            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+            const mode = getSelectedInputMode();
 
             amountResultBox.classList.add("show");
 
@@ -1393,11 +1453,11 @@
         }
 
         function buildParamsForRequest() {
-            const coin = coinSelect.value;
+            const coin = getSelectedCoin();
             const rawValue = parseFloat(activeAmountInput.value);
-            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+            const mode = getSelectedInputMode();
 
-            if (!(rawValue > 0)) {
+            if (!coin || !mode || !(rawValue > 0)) {
                 return null;
             }
 
@@ -1416,7 +1476,7 @@
 
         function updateSummary() {
             if (summaryCoin) {
-                summaryCoin.textContent = coinSelect ? coinSelect.value : "BTC";
+                summaryCoin.textContent = getSelectedCoin() || "—";
             }
 
             if (summaryPayment) {
@@ -1429,26 +1489,29 @@
         }
 
         function updateStepStatuses() {
+            const coin = getSelectedCoin();
             const rawValue = parseFloat(activeAmountInput.value);
-            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+            const mode = getSelectedInputMode();
             const walletText = walletInput ? walletInput.value.trim() : "";
 
             if (stepCoinStatus) {
-                stepCoinStatus.textContent = "Выбрано: " + coinSelect.value;
+                stepCoinStatus.textContent = coin ? "Выбрано: " + coin : "Не выбрано";
             }
 
             if (stepAmountStatus) {
-                if (hasValidCalculation && rubInput.value && coinAmountInput.value) {
-                    stepAmountStatus.textContent = "Готово: " + formatRub(rubInput.value) + " / " + formatCoin(coinAmountInput.value, coinSelect.value);
+                if (!mode) {
+                    stepAmountStatus.textContent = "Не выбран способ ввода";
+                } else if (hasValidCalculation && rubInput.value && coinAmountInput.value && coin) {
+                    stepAmountStatus.textContent = "Готово: " + formatRub(rubInput.value) + " / " + formatCoin(coinAmountInput.value, coin);
                 } else if (rawValue > 0) {
-                    stepAmountStatus.textContent = mode === "coin" ? "Считаем количество монет…" : "Считаем сумму…";
+                    stepAmountStatus.textContent = mode === "coin" ? "Считаем сумму…" : "Считаем количество монет…";
                 } else {
                     stepAmountStatus.textContent = "Не заполнено";
                 }
             }
 
             if (stepPaymentStatus) {
-                stepPaymentStatus.textContent = "Выбрано: " + paymentLabel();
+                stepPaymentStatus.textContent = getSelectedPaymentType() ? "Выбрано: " + paymentLabel() : "Не выбрано";
             }
 
             if (stepWalletStatus) {
@@ -1457,15 +1520,22 @@
         }
 
         function updateProgressiveUi() {
+            const hasCoin = Boolean(getSelectedCoin());
+            const hasInputMode = Boolean(getSelectedInputMode());
             const hasAmount = activeAmountInput && parseFloat(activeAmountInput.value) > 0;
+            const hasPayment = Boolean(getSelectedPaymentType());
             const hasWallet = walletInput && walletInput.value.trim().length > 0;
 
+            if (stepCoin) {
+                stepCoin.classList.toggle("is-ready", hasCoin);
+            }
+
             if (stepAmount) {
-                stepAmount.classList.toggle("is-ready", hasValidCalculation);
+                stepAmount.classList.toggle("is-ready", hasInputMode && hasValidCalculation);
             }
 
             if (stepPayment) {
-                stepPayment.classList.toggle("is-ready", true);
+                stepPayment.classList.toggle("is-ready", hasPayment);
             }
 
             if (stepWallet) {
@@ -1479,6 +1549,18 @@
                 return;
             }
 
+            if (!hasCoin) {
+                submitButton.disabled = true;
+                submitHint.textContent = "Выберите монету, чтобы продолжить.";
+                return;
+            }
+
+            if (!hasInputMode) {
+                submitButton.disabled = true;
+                submitHint.textContent = "Выберите, как указать сумму: в RUB или в монете.";
+                return;
+            }
+
             if (!hasAmount) {
                 submitButton.disabled = true;
                 submitHint.textContent = "Введите сумму, чтобы продолжить.";
@@ -1488,6 +1570,12 @@
             if (!hasValidCalculation) {
                 submitButton.disabled = true;
                 submitHint.textContent = "Дождитесь корректного расчёта заявки.";
+                return;
+            }
+
+            if (!hasPayment) {
+                submitButton.disabled = true;
+                submitHint.textContent = "Выберите способ оплаты: СБП или карта.";
                 return;
             }
 
@@ -1624,6 +1712,20 @@
             });
         }
 
+        if (paymentChoiceInputs && paymentChoiceInputs.length) {
+            paymentChoiceInputs.forEach((input) => {
+                input.addEventListener("change", () => {
+                    if (!input.checked) {
+                        return;
+                    }
+
+                    paymentDetailsType.value = input.value;
+                    updateProgressiveUi();
+                    openStep("step_wallet");
+                });
+            });
+        }
+
         activeAmountInput.addEventListener("input", () => {
             if (isSyncingFromServer) {
                 return;
@@ -1663,6 +1765,10 @@
         });
 
         paymentDetailsType.addEventListener("change", () => {
+            const selected = document.querySelector(`input[name='payment_details_type_choice'][value='${paymentDetailsType.value}']`);
+            if (selected) {
+                selected.checked = true;
+            }
             updateProgressiveUi();
         });
 
@@ -1677,15 +1783,35 @@
 
             event.preventDefault();
 
+            const coin = getSelectedCoin();
             const rawValue = parseFloat(activeAmountInput.value);
             const minRub = getMinRubAmount();
-            const mode = inputModeSelect ? inputModeSelect.value : "rub";
+            const mode = getSelectedInputMode();
+            const paymentType = getSelectedPaymentType();
+
+            if (!coin) {
+                openStep("step_coin");
+                alert("Выберите монету.");
+                return;
+            }
+
+            if (!mode) {
+                openStep("step_amount");
+                alert("Выберите, как указать сумму: в RUB или в монете.");
+                return;
+            }
 
             if (!rawValue || rawValue <= 0) {
                 openStep("step_amount");
                 alert(mode === "coin"
-                    ? `Введите корректное количество ${coinSelect.value}.`
+                    ? `Введите корректное количество ${coin}.`
                     : "Введите корректную сумму в RUB.");
+                return;
+            }
+
+            if (!paymentType) {
+                openStep("step_payment");
+                alert("Выберите способ оплаты: СБП или карта.");
                 return;
             }
 
@@ -1721,7 +1847,7 @@
                 if (!rub || rub < minRub) {
                     openStep("step_amount");
                     toggleRubWarning(rub || 0);
-                    alert(`Минимальная сумма заявки для ${coinSelect.value} — ${formatRub(minRub)}.`);
+                    alert(`Минимальная сумма заявки для ${coin} — ${formatRub(minRub)}.`);
                     submitInProgress = false;
                     if (submitButton) {
                         submitButton.textContent = "Создать заявку";
@@ -1748,5 +1874,6 @@
         updateStepStatuses();
         updateProgressiveUi();
     </script>
+
 </body>
 </html>
